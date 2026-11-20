@@ -4,23 +4,30 @@
 
 **Download:** [Moho-Power-Launcher-1.0.0.zip](https://github.com/iamthecrave/Moho-Power-Launcher/releases/download/v1.0.0/Moho-Power-Launcher-1.0.0.zip) · [how to install](#installing)
 
-**Watch it in action:**
-
-<!-- video here -->
-
 
 ## What It Does
-
+Choose the Moho scripts you want to load at Moho run time. Feature rich and FREE! 
 <!-- your text here -->
-
+<img width="1359" height="832" alt="splash screen" src="https://github.com/user-attachments/assets/e7124ab8-315a-4750-b9b5-27ce94374922" />
 
 ## Features
+## Features (this section written by AI)
 
-<!-- your text here -->
+- **Only what you need:** tick the scripts you want, click Launch Moho, and Moho starts with exactly those.
+- **Columns:** sort scripts into columns (Draw, Rig, Animate...). Tick a column's title to switch it all on.
+- **Saved sets:** save a selection as "Rigging" or "Lip Sync" and switch with one pick.
+- **Install from a download:** pick the .zip or .lua you downloaded and it's in.
+- **Sort the Tools panel:** put add-on tools in Moho's groups or your own, in your order.
+- **Drag to organise:** drag a script to another column, or right-click > Move to.
+- **Safe:** only removes files it installed. Your own scripts are never touched.
+- **Clean undo:** untick everything and Moho is back exactly as it was.
+- **Easy install:** double-click to install, no admin rights. Uninstall keeps your scripts.
+- **Free** for non-commercial use.
+
 
 
 ## Requirements
-- Moho Pro 14 on Windows. Mac is untested.
+- Moho Pro 14 on Windows. Tested on 14.5.1. Mac is untested.
 
 ## Installing
 1. Download the zip and unzip it (right-click > **Extract All**).
