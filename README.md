@@ -10,7 +10,7 @@ Choose the Moho scripts you want to load at Moho run time. Feature rich and FREE
 <!-- your text here -->
 <img width="1359" height="832" alt="splash screen" src="https://github.com/user-attachments/assets/e7124ab8-315a-4750-b9b5-27ce94374922" />
 
-##Main Features 
+## Main Features 
 <img width="1359" height="832" alt="launcher features" src="https://github.com/user-attachments/assets/eafc0494-d275-4b79-91af-567ae775d515" />
 
 ## Complete List of Features (this section written by AI)
