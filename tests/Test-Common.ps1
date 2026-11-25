@@ -84,11 +84,29 @@ Write-Host "`n== toolbar: A Tool in Bone, button in a new group with an unsafe n
 MPL-SaveToolbarMap ([ordered]@{ 'Bone' = @('ab_a_tool'); 'My Stuff!' = @('ef_btn') })
 1..3 | ForEach-Object { [void](MPL-ToolbarApply $S) }
 $list = Get-Content (Join-Path $Scripts 'tool/_tool_list.txt')
-Check 'applying 3 times gives 2 blocks, not 6' (@($list | Where-Object { $_ -eq $MPL.TBBegin }).Count -eq 2)
+Check 'applying 3 times adds each tool once' ((@($list | Where-Object { $_ -eq "tool`tab_a_tool`t..." }).Count -eq 1) -and (@($list | Where-Object { $_ -like '*My-Stuff*' }).Count -eq 1))
+Check 'no comment markers written (#3: Moho-proven format)' (@($list | Where-Object { $_ -like '/`* Moho Power Launcher*' }).Count -eq 0)
+$h = [array]::IndexOf($list, 'group MOHO.Localize("/Tools/Group/My-Stuff=My-Stuff")')
+Check 'new group has a blank line before it, then its tool' (($list[$h - 1] -eq '') -and ($list[$h + 1] -eq "button`tef_btn`t..."))
 $i = [array]::IndexOf($list, "tool`tab_a_tool`t...")
 Check 'A Tool listed as a tool, inside Bone' ($i -gt [array]::IndexOf($list, 'group MOHO.Localize("/Tools/Group/Bone=Bone")'))
 Check 'ef_btn listed as a button' ($list -contains "button`tef_btn`t...")
 Check 'new group name made safe' ($list -contains 'group MOHO.Localize("/Tools/Group/My-Stuff=My-Stuff")')
+
+Write-Host "`n== #3: a group with several tools, saved and read back"
+MPL-SaveToolbarMap ([ordered]@{ 'Several' = @('nothing_here', 'ab_a_tool', 'ef_btn') })
+$back = MPL-LoadToolbarMap
+Check 'read back as three separate names' ((@($back['Several']).Count -eq 3) -and (@($back['Several'])[1] -eq 'ab_a_tool'))
+[void](MPL-ToolbarApply $S)
+$list = Get-Content (Join-Path $Scripts 'tool/_tool_list.txt')
+$h = [array]::IndexOf($list, 'group MOHO.Localize("/Tools/Group/Several=Several")')
+Check 'both tools land in the group, in order' (($h -ge 0) -and ($list[$h + 1] -eq "tool`tab_a_tool`t...") -and ($list[$h + 2] -eq "button`tef_btn`t..."))
+Check 'old groups taken out when the map changes' (@($list | Where-Object { $_ -like '*My-Stuff*' }).Count -eq 0)
+
+Write-Host "`n== #3: a tool saved in two groups goes in the last one only"
+MPL-SaveToolbarMap ([ordered]@{ 'First' = @('ab_a_tool', 'ef_btn'); 'Second' = @('ab_a_tool') })
+$back = MPL-LoadToolbarMap
+Check 'kept in Second, dropped from First' ((@($back['Second']) -contains 'ab_a_tool') -and -not (@($back['First']) -contains 'ab_a_tool') -and (@($back['First']) -contains 'ef_btn'))
 
 Write-Host "`n== launch 2: nothing ticked"
 $r = MPL-Apply $S @(); Write-Host "  $r"; $t = MPL-ToolbarApply $S; Write-Host "  $t"
@@ -112,7 +130,7 @@ $own = $builtIn.Replace("`r`n", "`n") + "group MOHO.Localize(`"/Tools/Group/Mine
 Put (Join-Path $Scripts 'tool/_tool_list.txt') $own
 $before = (Get-FileHash (Join-Path $Scripts 'tool/_tool_list.txt')).Hash
 [void](MPL-Apply $S @($byKey['ab_a_tool'])); [void](MPL-ToolbarApply $S)
-Check 'block added to your list' ((Get-Content (Join-Path $Scripts 'tool/_tool_list.txt')) -contains $MPL.TBBegin)
+Check 'tool added to your list' ((Get-Content (Join-Path $Scripts 'tool/_tool_list.txt')) -contains "tool`tab_a_tool`t...")
 Check 'your own line kept' ((Get-Content (Join-Path $Scripts 'tool/_tool_list.txt')) -contains "tool`tmy_own`t...")
 $msg = MPL-RemoveAll $S; Write-Host "  $msg"
 Check 'your list restored exactly (LF endings kept)' ((Get-FileHash (Join-Path $Scripts 'tool/_tool_list.txt')).Hash -eq $before)
@@ -123,7 +141,7 @@ Write-Host "`n== the launcher's own list, edited by you, is not deleted"
 Add-Content (Join-Path $Scripts 'tool/_tool_list.txt') '/* my note */'
 [void](MPL-Apply $S @()); [void](MPL-ToolbarApply $S)
 Check 'edited list kept' (Has 'tool/_tool_list.txt')
-Check 'your note kept, launcher blocks gone' (((Get-Content (Join-Path $Scripts 'tool/_tool_list.txt')) -contains '/* my note */') -and -not ((Get-Content (Join-Path $Scripts 'tool/_tool_list.txt')) -contains $MPL.TBBegin))
+Check 'your note kept, launcher lines gone' (((Get-Content (Join-Path $Scripts 'tool/_tool_list.txt')) -contains '/* my note */') -and -not ((Get-Content (Join-Path $Scripts 'tool/_tool_list.txt')) -contains "tool`tab_a_tool`t..."))
 Remove-Item (Join-Path $Scripts 'tool') -Recurse -Force
 
 Write-Host "`n== Adopt: handing over a script you installed yourself"
@@ -138,8 +156,9 @@ Write-Host "`n== broken record: nothing removed"
 '{ broken' | Set-Content $MPL.Record
 [void](MPL-Apply $S @()); $w = Warnings
 Check 'file not removed' (Has 'tool/ab_a_tool.lua')
-Check 'warned, and broken file kept' ((@($w | Where-Object { $_ -like '*could not be read*' }).Count -ge 1) -and (@(Get-ChildItem $MPL.DataDir -Filter 'installed.broken-*').Count -eq 1))
-Remove-Item $MPL.Record; Remove-Item (Join-Path $Scripts 'tool') -Recurse -Force
+Check 'warned, and broken file kept' ((@($w | Where-Object { $_ -like '*could not be read*' }).Count -ge 1) -and (@(Get-ChildItem (Split-Path $MPL.Record) -Filter 'installed.broken-*').Count -eq 1))
+Remove-Item $MPL.Record; Get-ChildItem (Split-Path $MPL.Record) -Filter 'installed.broken-*' | Remove-Item
+Remove-Item (Join-Path $Scripts 'tool') -Recurse -Force
 
 Write-Host "`n== content folder changed: old one cleaned"
 [void](MPL-Apply $S @($byKey['ab_a_tool'], $byKey['cd_menu_thing']))
@@ -149,6 +168,55 @@ $S2.ContentFolder = Join-Path $Root 'content2'; New-Item -ItemType Directory $S2
 Check 'old folder: launcher files gone' (-not (Has 'tool/ab_a_tool.lua') -and -not (Has 'menu/Extra/cd_menu_thing.lua'))
 Check "old folder: user's files stay" ((Has 'utility/shared.lua') -and (Has 'menu/Extra'))
 Check 'new folder has the ticked script' (Test-Path (Join-Path $S2.ContentFolder 'scripts/tool/ab_a_tool.lua'))
+
+Write-Host "`n== #6: shared data lives in the content folder"
+$sharedDir = Join-Path $S2.ContentFolder 'Moho Power Launcher'
+Check 'record is in the content folder' (Test-Path (Join-Path $sharedDir 'installed.json'))
+Check 'choices.json is there, this computer keeps only paths' ((Test-Path (Join-Path $sharedDir 'choices.json')) -and -not ((Get-Content $MPL.Settings -Raw) -match 'Selected'))
+
+Write-Host "`n== #6: a second computer removes what the first one installed"
+$machineA = @{ DataDir = $MPL.DataDir; Settings = $MPL.Settings; Log = $MPL.Log }
+$MPL.DataDir = Join-Path $Root 'computerB'; $MPL.Settings = Join-Path $MPL.DataDir 'settings.json'; $MPL.Log = Join-Path $MPL.DataDir 'log.txt'
+$SB = MPL-LoadSettings; $SB.MohoPath = $Moho; $SB.ContentFolder = $S2.ContentFolder; $SB.MasterFolder = $Lib
+[void](MPL-Apply $SB @())
+Check 'computer B unticked it: gone' (-not (Test-Path (Join-Path $S2.ContentFolder 'scripts/tool/ab_a_tool.lua')))
+
+Write-Host "`n== #6: a fresh install on a second computer keeps the shared choices"
+$cA = MPL-LoadSettings; $cA.ContentFolder = $S2.ContentFolder; $cA.Selected = @('ab_a_tool'); $cA['__ChoicesFrom'] = (Join-Path $S2.ContentFolder 'Moho Power Launcher'); MPL-SaveSettings $cA
+Remove-Item $MPL.Settings -ErrorAction SilentlyContinue
+$fresh = MPL-LoadSettings; $fresh.ContentFolder = $S2.ContentFolder; MPL-SaveSettings $fresh      # what Setup does
+$again = MPL-LoadSettings
+Check 'shared ticks not wiped by the new computer' (@($again.Selected) -contains 'ab_a_tool')
+
+Write-Host "`n== #6: updating from 1.0.0 moves this computer's data into the shared folder"
+$MPL.DataDir = Join-Path $Root 'computerC'; $MPL.Settings = Join-Path $MPL.DataDir 'settings.json'; $MPL.Log = Join-Path $MPL.DataDir 'log.txt'
+$C3 = Join-Path $Root 'content3'; New-Item -ItemType Directory (Join-Path $C3 'scripts/tool') -Force | Out-Null
+Put (Join-Path $C3 'scripts/tool/old_tool.lua') '-- put there by 1.0.0'
+$oldHash = (Get-FileHash (Join-Path $C3 'scripts/tool/old_tool.lua')).Hash
+$legacyList = $builtIn + "/* Moho Power Launcher: begin */`r`n`r`ngroup MOHO.Localize(`"/Tools/Group/Old=Old`")`r`ntool`told_tool`t...`r`n/* Moho Power Launcher: end */`r`n"
+Put (Join-Path $C3 'scripts/tool/_tool_list.txt') $legacyList
+New-Item -ItemType Directory $MPL.DataDir | Out-Null
+@{ MohoPath = $Moho; ContentFolder = $C3; MasterFolder = $Lib; Selected = @('ab_a_tool'); Configurations = @{ 'My Set' = @('ab_a_tool') } } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $MPL.DataDir 'settings.json')
+@{ ScriptsFolder = (Join-Path $C3 'scripts'); Files = @{ 'tool/old_tool.lua' = @{ Rel = 'tool/old_tool.lua'; Hash = $oldHash; Package = 'Old' } }; Dirs = @(); ToolListCreated = $false } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $MPL.DataDir 'installed.json')
+@{ Groups = @(@{ Name = 'Old'; Tools = @('old_tool') }) } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $MPL.DataDir 'toolbar.json')
+$up = MPL-LoadSettings
+$shared3 = Join-Path $C3 'Moho Power Launcher'
+Check 'record moved to the shared folder' ((Test-Path (Join-Path $shared3 'installed.json')) -and (Test-Path (Join-Path $MPL.DataDir 'installed.moved.json')))
+Check 'toolbar groups moved' (Test-Path (Join-Path $shared3 'toolbar.json'))
+Check 'ticks and saved sets moved' (((Get-Content (Join-Path $shared3 'choices.json') -Raw) -match 'My Set') -and (@($up.Selected) -contains 'ab_a_tool'))
+[void](MPL-Apply $up @()); [void](MPL-ToolbarApply $up)
+Check "1.0.0's file still removed after the move" (-not (Test-Path (Join-Path $C3 'scripts/tool/old_tool.lua')))
+$listNow = Get-Content (Join-Path $C3 'scripts/tool/_tool_list.txt') -Raw
+Check "1.0.0's marked block taken out of the tool list" ($listNow -eq $builtIn)
+
+Write-Host "`n== content folder switched on this computer: the old one is tidied"
+$up = MPL-LoadSettings
+[void](MPL-Apply $up @($byKey['ab_a_tool']))
+Check 'installed in content3' (Test-Path (Join-Path $C3 'scripts/tool/ab_a_tool.lua'))
+$up.ContentFolder = $S2.ContentFolder
+[void](MPL-Apply $up @())
+Check 'switching folders took it out of content3' (-not (Test-Path (Join-Path $C3 'scripts/tool/ab_a_tool.lua')))
+$MPL.DataDir = $machineA.DataDir; $MPL.Settings = $machineA.Settings; $MPL.Log = $machineA.Log
 
 Write-Host "`n== log"
 MPL-Log 'tést'; MPL-SaveLog

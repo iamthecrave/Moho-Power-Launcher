@@ -32,7 +32,7 @@ $Title = "$($MPL.Name) - Sort toolbar"
 $listPath = Join-Path (Join-Path $Scripts 'tool') '_tool_list.txt'
 $baseLines = @()
 if (Test-Path -LiteralPath $listPath) {
-    $baseLines = MPL-StripOurs (MPL-ReadLines $listPath).Lines
+    $baseLines = MPL-StripOurs (MPL-ReadLines $listPath).Lines (MPL-LoadRecord)
 } else {
     $builtIn = MPL-BuiltInToolList $S
     if ($builtIn) { $baseLines = (MPL-ReadLines $builtIn).Lines }
@@ -129,6 +129,11 @@ foreach ($group in $script:Groups) { [void]$groupColumn.Items.Add($group) }
 [void]$grid.Columns.Add($fromColumn)
 [void]$grid.Columns.Add($groupColumn)
 $form.Controls.Add($grid)
+
+# A pick in the Group drop-down counts straight away (not only when you leave the cell)
+$grid.Add_CurrentCellDirtyStateChanged({
+    if ($grid.IsCurrentCellDirty) { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) }
+})
 
 # One row per tool, sorted by group then by its place in the group
 $rows = @()
@@ -248,10 +253,19 @@ $cancelButton.DialogResult = 'Cancel'
 $form.Controls.AddRange(@($saveButton, $saveNowButton, $cancelButton))
 $form.CancelButton = $cancelButton
 
+# What was saved, in words: for the message and the log
+function Describe-Map($m) {
+    if ($m.Count -eq 0) { return '(no tools in groups: all in Other)' }
+    return (($m.Keys | ForEach-Object { "$_ : " + (@($m[$_]) -join ', ') }) -join "`n")
+}
+
 $saveButton.Add_Click({
     $grid.EndEdit()
-    MPL-SaveToolbarMap (Get-GridMap)
-    [void][System.Windows.Forms.MessageBox]::Show('Saved. The launcher applies it next time it starts Moho.', $Title)
+    $saved = Get-GridMap
+    MPL-SaveToolbarMap $saved
+    MPL-Log ("Sort toolbar saved:`n" + (Describe-Map $saved))
+    MPL-SaveLog
+    [void][System.Windows.Forms.MessageBox]::Show("Saved:`n`n$(Describe-Map $saved)`n`nThe launcher applies it next time it starts Moho.", $Title)
     $form.DialogResult = 'OK'
     $form.Close()
 })
@@ -262,7 +276,9 @@ $saveNowButton.Add_Click({
         [void][System.Windows.Forms.MessageBox]::Show('Close Moho first: it reads the Tools-panel list when it starts.', $Title, 'OK', 'Warning')
         return
     }
-    MPL-SaveToolbarMap (Get-GridMap)
+    $saved = Get-GridMap
+    MPL-SaveToolbarMap $saved
+    MPL-Log ("Sort toolbar saved:`n" + (Describe-Map $saved))
     $summary = MPL-ToolbarApply $S
     MPL-Log $summary
     MPL-SaveLog

@@ -17,15 +17,27 @@
 # ---------- names and places ----------
 $MPL = @{}
 $MPL.Name      = 'Moho Power Launcher'
-$MPL.Version   = '1.0.0'
+$MPL.Version   = '1.0.1'
 $MPL.MutexName = 'Local\MohoPowerLauncher.Running'   # held while a launcher window is open
 
 $MPL.AppDir   = $PSScriptRoot
+
+# On this computer only: where Moho and the folders are, and the log
 $MPL.DataDir  = Join-Path $env:LOCALAPPDATA 'Moho Power Launcher'
 $MPL.Settings = Join-Path $MPL.DataDir 'settings.json'
-$MPL.Record   = Join-Path $MPL.DataDir 'installed.json'
-$MPL.Toolbar  = Join-Path $MPL.DataDir 'toolbar.json'
 $MPL.Log      = Join-Path $MPL.DataDir 'log.txt'
+
+# Shared by every computer that uses the same Custom Content Folder (Dropbox, OneDrive...):
+# the install record, what's ticked, saved sets and toolbar groups. They live in a
+# "Moho Power Launcher" folder inside the Custom Content Folder - see MPL-UseShared.
+$MPL.SharedName = 'Moho Power Launcher'
+$MPL.Shared  = ''
+$MPL.Choices = ''
+$MPL.Record  = Join-Path $MPL.DataDir 'installed.json'     # until the content folder is known
+$MPL.Toolbar = Join-Path $MPL.DataDir 'toolbar.json'
+
+# Settings that belong to one computer; everything else is shared
+$MPL.LocalKeys = @('MohoPath', 'ContentFolder', 'MasterFolder', 'LastContentFolder')
 
 $MPL.Suffix = '_for-moho-install-script-command'   # Moho's own name ending for script packages
 $MPL.Label  = 'launcher.txt'                        # one line in a package folder: "Column | Name"
@@ -201,22 +213,79 @@ function MPL-Flatten($value) {
 
 
 # ==========================================================================
-#  Settings  (settings.json)
+#  Settings
 # ==========================================================================
-#  MohoPath         Moho.exe
-#  ContentFolder    Moho's Custom Content Folder (it holds the 'scripts' folder)
-#  MasterFolder     your script library: one folder per script
+#  On this computer (settings.json in %LOCALAPPDATA%\Moho Power Launcher):
+#  MohoPath           Moho.exe
+#  ContentFolder      Moho's Custom Content Folder (it holds the 'scripts' folder)
+#  MasterFolder       your script library: one folder per script
+#  LastContentFolder  the content folder the last launch filled (to tidy it if you switch)
+#
+#  Shared (choices.json in <ContentFolder>\Moho Power Launcher):
 #  Columns          the launcher's columns, left to right
 #  SplitTag         e.g. "AI": scripts named "... (AI)" get their own box in each column
 #  AutoGroups       e.g. {"ai_": "AI"}: unsorted tools whose name starts ai_ go in Tools-panel group AI
 #  LooseMenuFolder  Scripts-menu folder for single .lua files
 #  Selected, LastConfiguration, Configurations: what is ticked, and saved sets
 
+function MPL-SharedDir([string]$contentFolder) {
+    return (Join-Path $contentFolder $MPL.SharedName)
+}
+
+# Point the record, toolbar groups and choices at this content folder's shared folder
+function MPL-UseShared([string]$contentFolder) {
+    if (MPL-Exists $contentFolder) {
+        $dir = MPL-SharedDir $contentFolder
+        $MPL.Shared  = $dir
+        $MPL.Choices = Join-Path $dir 'choices.json'
+        $MPL.Record  = Join-Path $dir 'installed.json'
+        $MPL.Toolbar = Join-Path $dir 'toolbar.json'
+    } else {
+        $MPL.Shared  = ''
+        $MPL.Choices = ''
+        $MPL.Record  = Join-Path $MPL.DataDir 'installed.json'
+        $MPL.Toolbar = Join-Path $MPL.DataDir 'toolbar.json'
+    }
+}
+
+function MPL-EnsureFolderOf([string]$file) {
+    $dir = Split-Path -Parent $file
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    if ($MPL.Shared -and $dir -eq $MPL.Shared) {
+        $about = Join-Path $dir '_About this folder.txt'
+        if (-not (Test-Path -LiteralPath $about)) {
+            MPL-WriteText $about ("Moho Power Launcher keeps its shared data here, so every computer that uses this folder`r`n" +
+                                  "(through Dropbox, OneDrive...) sees the same ticks, saved sets, toolbar groups and install record.`r`n`r`n" +
+                                  "installed.json  the files the launcher put in the scripts folder (it only ever removes those)`r`n" +
+                                  "choices.json    what's ticked, saved sets, columns`r`n" +
+                                  "toolbar.json    Tools-panel groups (Sort toolbar...)`r`n`r`n" +
+                                  "Please don't edit these by hand.`r`n")
+        }
+    }
+}
+
+# Copy a JSON object's properties onto the settings, turning nested objects into dictionaries
+function MPL-MergeSettings($s, $json) {
+    foreach ($p in $json.PSObject.Properties) {
+        if ($p.Name -eq 'Note') { continue }
+        if ($p.Name -eq 'Configurations' -or $p.Name -eq 'AutoGroups') {
+            $dict = [ordered]@{}
+            if ($p.Value) {
+                foreach ($q in $p.Value.PSObject.Properties) { $dict[$q.Name] = $q.Value }
+            }
+            $s[$p.Name] = $dict
+        } else {
+            $s[$p.Name] = $p.Value
+        }
+    }
+}
+
 function MPL-LoadSettings {
     $s = [ordered]@{
         MohoPath          = ''
         ContentFolder     = ''
         MasterFolder      = ''
+        LastContentFolder = ''
         Columns           = @('Draw', 'Rig', 'Animate', 'All Purpose')
         SplitTag          = ''
         AutoGroups        = [ordered]@{}
@@ -225,36 +294,124 @@ function MPL-LoadSettings {
         LastConfiguration = ''
         Configurations    = [ordered]@{}
     }
+
+    # 1. this computer's settings (1.0.0 kept everything here)
+    $hadSharedKeysLocally = $false
     if (Test-Path -LiteralPath $MPL.Settings) {
         try {
             $json = MPL-ReadJson $MPL.Settings
-            foreach ($p in $json.PSObject.Properties) {
-                if ($p.Name -eq 'Configurations' -or $p.Name -eq 'AutoGroups') {
-                    # JSON objects come back as PSCustomObject: turn them into dictionaries
-                    $dict = [ordered]@{}
-                    if ($p.Value) {
-                        foreach ($q in $p.Value.PSObject.Properties) { $dict[$q.Name] = $q.Value }
-                    }
-                    $s[$p.Name] = $dict
-                } else {
-                    $s[$p.Name] = $p.Value
-                }
-            }
+            MPL-MergeSettings $s $json
+            $hadSharedKeysLocally = [bool]($json.PSObject.Properties.Name -contains 'Selected')
         } catch {
             MPL-Warn "settings.json could not be read; using defaults. ($($_.Exception.Message))"
         }
     }
+
+    # 2. the shared choices, which win over anything kept on this computer
+    MPL-UseShared $s.ContentFolder
+    if ($MPL.Shared) {
+        MPL-MoveToShared
+        if (Test-Path -LiteralPath $MPL.Choices) {
+            try {
+                MPL-MergeSettings $s (MPL-ReadJson $MPL.Choices)
+            } catch {
+                MPL-Warn "choices.json could not be read; using this computer's choices. ($($_.Exception.Message))"
+            }
+        } elseif ($hadSharedKeysLocally) {
+            $script:MPLSaveChoicesNow = $true          # first run after updating from 1.0.0
+        }
+    }
+
     $s.Selected = MPL-Flatten $s.Selected
     $s.Columns  = MPL-Flatten $s.Columns
     foreach ($name in @($s.Configurations.Keys)) {
         $s.Configurations[$name] = MPL-Flatten $s.Configurations[$name]
     }
+    # Which shared folder these choices came from. Saving never overwrites another folder's
+    # choices with these (e.g. a fresh install on a second computer, or switching folders).
+    $s['__ChoicesFrom'] = $MPL.Shared
+    if ($script:MPLSaveChoicesNow) {
+        $script:MPLSaveChoicesNow = $false
+        try { MPL-SaveSettings $s; MPL-Log 'Moved ticks and saved sets to the shared folder.' } catch {}
+    }
     return $s
 }
 
 function MPL-SaveSettings($s) {
+    MPL-UseShared $s.ContentFolder
+    $local = [ordered]@{}
+    $shared = [ordered]@{ Note = 'Shared by every computer that uses this content folder. Edit in the launcher, not here.' }
+    foreach ($key in @($s.Keys)) {
+        if ($key.StartsWith('__')) { continue }
+        if ($MPL.LocalKeys -contains $key -or -not $MPL.Shared) { $local[$key] = $s[$key] }
+        else { $shared[$key] = $s[$key] }
+    }
     MPL-EnsureDataDir
-    MPL-WriteText $MPL.Settings ($s | ConvertTo-Json -Depth 8)
+    MPL-WriteText $MPL.Settings ($local | ConvertTo-Json -Depth 8)
+
+    if ($MPL.Shared) {
+        # Only write the shared choices if they're ours to write: none there yet, or these were read from there
+        $from = [string]$s['__ChoicesFrom']
+        $mine = (-not (Test-Path -LiteralPath $MPL.Choices)) -or ($from -and (MPL-SameFolder $from $MPL.Shared))
+        if ($mine) {
+            MPL-EnsureFolderOf $MPL.Choices
+            MPL-WriteText $MPL.Choices ($shared | ConvertTo-Json -Depth 8)
+            $s['__ChoicesFrom'] = $MPL.Shared
+        } else {
+            MPL-Log "This content folder already has shared choices (from another computer); kept them."
+        }
+    }
+}
+
+# Updating from 1.0.0: its install record and toolbar groups were kept on this computer only.
+# Move them into the shared folder. If the shared folder already has a record (another computer
+# got there first), add this computer's entries to it. The old files are kept, renamed *.moved.json.
+function MPL-MoveToShared {
+    $oldRecord  = Join-Path $MPL.DataDir 'installed.json'
+    $oldToolbar = Join-Path $MPL.DataDir 'toolbar.json'
+
+    if (Test-Path -LiteralPath $oldRecord) {
+        try {
+            $old = MPL-ReadJson $oldRecord
+            $scriptsHere = Join-Path (Split-Path -Parent $MPL.Shared) 'scripts'
+            if ($old.ScriptsFolder -and -not (MPL-SameFolder ([string]$old.ScriptsFolder) $scriptsHere)) {
+                MPL-Log "This computer's old install record is for another folder ($($old.ScriptsFolder)); left where it is."
+                return
+            }
+            $rec = MPL-LoadRecord
+            if (-not $rec.Broken) {
+                if ($old.Files) {
+                    foreach ($p in $old.Files.PSObject.Properties) {
+                        if (-not $rec.Files.ContainsKey($p.Name)) {
+                            $rec.Files[$p.Name] = @{ Rel = $p.Value.Rel; Hash = $p.Value.Hash; Package = $p.Value.Package }
+                        }
+                    }
+                }
+                foreach ($d in (MPL-Flatten $old.Dirs)) { if (-not $rec.Dirs.Contains($d)) { $rec.Dirs.Add($d) } }
+                if ($old.ToolListCreated -and -not $rec.ToolListCreated) {
+                    $rec.ToolListCreated = $true
+                    if ($old.ToolListHash) { $rec.ToolListHash = [string]$old.ToolListHash }
+                }
+                MPL-SaveRecord $rec
+                Move-Item -LiteralPath $oldRecord -Destination (Join-Path $MPL.DataDir 'installed.moved.json') -Force
+                MPL-Log "Moved this computer's install record to the shared folder ($($MPL.Shared))."
+            }
+        } catch {
+            MPL-Warn "Couldn't move this computer's install record to the shared folder: $($_.Exception.Message)"
+        }
+    }
+
+    if (Test-Path -LiteralPath $oldToolbar) {
+        try {
+            if (-not (Test-Path -LiteralPath $MPL.Toolbar)) {
+                MPL-EnsureFolderOf $MPL.Toolbar
+                Copy-Item -LiteralPath $oldToolbar -Destination $MPL.Toolbar
+            }
+            Move-Item -LiteralPath $oldToolbar -Destination (Join-Path $MPL.DataDir 'toolbar.moved.json') -Force
+        } catch {
+            MPL-Warn "Couldn't move this computer's toolbar groups to the shared folder: $($_.Exception.Message)"
+        }
+    }
 }
 
 function MPL-ScriptsFolder($s) {
@@ -344,19 +501,19 @@ function MPL-BuiltInToolList($s) {
 # ==========================================================================
 #  The install record  (installed.json)
 # ==========================================================================
-#  ScriptsFolder     the scripts folder the files below are in
 #  Files             rel path (lower case) -> { Rel; Hash; Package }
 #  Dirs              folders (rel) the launcher created
 #  ToolListCreated   the launcher created scripts\tool\_tool_list.txt ...
 #  ToolListHash      ... and this is how it looked when the launcher last wrote it
+#  ToolListAdded     the exact lines the launcher added to the tool list (so it can take them out again)
 
 function MPL-NewRecord {
     return @{
-        ScriptsFolder   = ''
         Files           = @{}
         Dirs            = New-Object System.Collections.Generic.List[string]
         ToolListCreated = $false
         ToolListHash    = ''
+        ToolListAdded   = New-Object System.Collections.Generic.List[string]
     }
 }
 
@@ -374,12 +531,12 @@ function MPL-LoadRecord {
             if (-not $r.Dirs.Contains($d)) { $r.Dirs.Add($d) }
         }
         $r.ToolListCreated = [bool]$json.ToolListCreated
-        if ($json.ToolListHash)  { $r.ToolListHash  = [string]$json.ToolListHash }
-        if ($json.ScriptsFolder) { $r.ScriptsFolder = [string]$json.ScriptsFolder }
+        if ($json.ToolListHash) { $r.ToolListHash = [string]$json.ToolListHash }
+        foreach ($line in (MPL-Flatten $json.ToolListAdded)) { $r.ToolListAdded.Add($line) }
     } catch {
         # Keep the broken file for inspection, and remove nothing this time:
         # without the record, the launcher can't tell its files from yours.
-        $keep = Join-Path $MPL.DataDir ("installed.broken-{0:yyyyMMdd-HHmmss}.json" -f (Get-Date))
+        $keep = Join-Path (Split-Path -Parent $MPL.Record) ("installed.broken-{0:yyyyMMdd-HHmmss}.json" -f (Get-Date))
         try { Copy-Item -LiteralPath $MPL.Record -Destination $keep -Force } catch {}
         MPL-Warn ("installed.json could not be read (kept as $(Split-Path -Leaf $keep)), so nothing was removed this time. " +
                   "($($_.Exception.Message))")
@@ -389,14 +546,14 @@ function MPL-LoadRecord {
 }
 
 function MPL-SaveRecord($r) {
-    MPL-EnsureDataDir
+    MPL-EnsureFolderOf $MPL.Record
     $out = [ordered]@{
         Note            = 'Files Moho Power Launcher put in your scripts folder. Do not edit.'
-        ScriptsFolder   = $r.ScriptsFolder
         Files           = $r.Files
         Dirs            = @($r.Dirs)
         ToolListCreated = $r.ToolListCreated
         ToolListHash    = $r.ToolListHash
+        ToolListAdded   = @($r.ToolListAdded)
     }
     MPL-WriteText $MPL.Record ($out | ConvertTo-Json -Depth 6)
 }
@@ -514,23 +671,19 @@ function MPL-PackageFiles($s, $item) {
 function MPL-Apply($s, $chosenItems) {
     $scripts = MPL-ScriptsFolder $s
     if (-not (Test-Path -LiteralPath $scripts)) { New-Item -ItemType Directory -Path $scripts -Force | Out-Null }
-    $rec = MPL-LoadRecord
-
-    # --- 0. The content folder changed since last time: take the launcher's files out of the old one first
-    if (-not $rec.Broken -and $rec.ScriptsFolder -and -not (MPL-SameFolder $rec.ScriptsFolder $scripts)) {
-        $oldScripts = $rec.ScriptsFolder
-        if (Test-Path -LiteralPath $oldScripts) {
-            $oldSettings = @{}
-            foreach ($k in $s.Keys) { $oldSettings[$k] = $s[$k] }
-            $oldSettings.ContentFolder = Split-Path -Parent $oldScripts
-            MPL-Log ("Content folder changed. Old folder: " + (MPL-RemoveAll $oldSettings))
-            $rec = MPL-LoadRecord
-        } else {
-            MPL-Log "Content folder changed; the old one ($oldScripts) is gone, so its record is cleared."
-            $rec = MPL-NewRecord
-        }
+    # --- 0. This computer filled a different content folder last time: take the launcher's
+    #        files out of that one first (using that folder's own record)
+    $last = [string]$s.LastContentFolder
+    if ($last -and -not (MPL-SameFolder $last $s.ContentFolder) -and (MPL-Exists $last)) {
+        $oldSettings = @{}
+        foreach ($k in $s.Keys) { $oldSettings[$k] = $s[$k] }
+        $oldSettings.ContentFolder = $last
+        MPL-UseShared $last
+        try { MPL-Log ("Content folder changed. Old folder: " + (MPL-RemoveAll $oldSettings)) }
+        finally { MPL-UseShared $s.ContentFolder }
     }
-    $rec.ScriptsFolder = $scripts
+    MPL-UseShared $s.ContentFolder
+    $rec = MPL-LoadRecord
 
     # --- 1. What the chosen packages want in scripts (rel path -> source).
     #        If two packages carry the same file with different contents, the newer copy wins.
@@ -638,6 +791,12 @@ function MPL-Apply($s, $chosenItems) {
     }
     MPL-SaveRecord $rec
 
+    # remember which content folder this computer filled, to tidy it if the folder changes
+    if (-not (MPL-SameFolder ([string]$s.LastContentFolder) $s.ContentFolder) -or -not $s.LastContentFolder) {
+        $s.LastContentFolder = $s.ContentFolder
+        MPL-SaveSettings $s
+    }
+
     $summary = "Scripts: $added added, $kept already in place, $removed removed"
     if ($alreadyYours) { $summary += ", $alreadyYours already there as your own" }
     if ($skipped)      { $summary += ", $skipped skipped (yours kept)" }
@@ -700,7 +859,17 @@ function MPL-LoadToolbarMap {
     if (-not (Test-Path -LiteralPath $MPL.Toolbar)) { return $map }
     try {
         $json = MPL-ReadJson $MPL.Toolbar
-        foreach ($g in $json.Groups) { $map[[string]$g.Name] = @(MPL-Flatten $g.Tools) }
+        # MPL-Flatten already returns a plain list of names. (Wrapping it in @() nested the list,
+        # so a group with two or more tools matched none of them: issue #3.)
+        foreach ($g in $json.Groups) { $map[[string]$g.Name] = MPL-Flatten $g.Tools }
+
+        # A tool can sit in one group only. If an older save put it in several, the last one wins
+        # (that's the one Sort toolbar shows).
+        $finalGroup = @{}
+        foreach ($group in $map.Keys) { foreach ($tool in $map[$group]) { $finalGroup[$tool.ToLower()] = $group } }
+        foreach ($group in @($map.Keys)) {
+            $map[$group] = [string[]]@($map[$group] | Where-Object { $finalGroup[$_.ToLower()] -eq $group } | Select-Object -Unique)
+        }
     } catch {
         MPL-Warn "toolbar.json could not be read: tools stay in Moho's Other group."
     }
@@ -708,7 +877,7 @@ function MPL-LoadToolbarMap {
 }
 
 function MPL-SaveToolbarMap($map) {
-    MPL-EnsureDataDir
+    MPL-EnsureFolderOf $MPL.Toolbar
     $groups = @()
     foreach ($name in $map.Keys) { $groups += [pscustomobject]@{ Name = $name; Tools = @($map[$name]) } }
     $out = [pscustomobject]@{ Note = 'Tools-panel groups for add-on tools. Edit with Sort toolbar.'; Groups = $groups }
@@ -737,14 +906,25 @@ function MPL-ToolKind([string]$path) {
     return 'button'
 }
 
-# A tool list without the launcher's marked blocks
-function MPL-StripOurs([string[]]$lines) {
+# A tool list without the lines the launcher added:
+#  - the lines listed in the record (ToolListAdded), and the blank line before a group it added
+#  - blocks between the 1.0.0 markers  /* Moho Power Launcher: begin */ ... end */
+function MPL-StripOurs([string[]]$lines, $rec) {
+    $added = New-Object 'System.Collections.Generic.HashSet[string]'
+    if ($rec) { foreach ($line in $rec.ToolListAdded) { [void]$added.Add($line) } }
+
     $out = New-Object System.Collections.Generic.List[string]
-    $inside = $false
+    $insideMarkers = $false
     foreach ($line in $lines) {
-        if ($line.Trim() -eq $MPL.TBBegin) { $inside = $true;  continue }
-        if ($line.Trim() -eq $MPL.TBEnd)   { $inside = $false; continue }
-        if (-not $inside) { $out.Add($line) }
+        if ($line.Trim() -eq $MPL.TBBegin) { $insideMarkers = $true;  continue }
+        if ($line.Trim() -eq $MPL.TBEnd)   { $insideMarkers = $false; continue }
+        if ($insideMarkers) { continue }
+        if ($added.Contains($line)) {
+            $isGroup = $line -match '^\s*group\s'
+            if ($isGroup -and $out.Count -gt 0 -and $out[$out.Count - 1] -eq '') { $out.RemoveAt($out.Count - 1) }
+            continue
+        }
+        $out.Add($line)
     }
     return ,($out.ToArray())
 }
@@ -757,9 +937,13 @@ function MPL-ToolListIsOurs($rec, [string]$listPath) {
     return ((MPL-Hash $listPath) -eq $rec.ToolListHash)
 }
 
-# Rebuild scripts\tool\_tool_list.txt: your own list (or Moho's built-in one)
-# plus marked blocks putting the add-on tools in their groups. Your own lines are never changed.
+# Rebuild scripts\tool\_tool_list.txt: your own list (or Moho's built-in one) plus the
+# add-on tools in their groups. Lines are written exactly the way Moho's own list writes them
+# (no comment markers): into the end of a group Moho already has, or as a new group at the end
+# of the list after a blank line. Every added line is kept in the record so it can be taken out
+# exactly. Your own lines are never changed.
 function MPL-ToolbarApply($s) {
+    MPL-UseShared $s.ContentFolder
     $toolDir = Join-Path (MPL-ScriptsFolder $s) 'tool'
     $listPath = Join-Path $toolDir '_tool_list.txt'
     $rec = MPL-LoadRecord
@@ -772,7 +956,7 @@ function MPL-ToolbarApply($s) {
         }
         $created = $ours
         $format = MPL-ReadLines $listPath
-        $baseLines = MPL-StripOurs $format.Lines
+        $baseLines = MPL-StripOurs $format.Lines $rec
     } else {
         $builtIn = MPL-BuiltInToolList $s
         if (-not $builtIn) { return "Toolbar: Moho's tool list not found - add-on tools stay in Other." }
@@ -799,8 +983,10 @@ function MPL-ToolbarApply($s) {
     $placed = @{}
     $groups = [ordered]@{}
     function Add-ToGroup([string]$group, $file) {
-        if (-not $groups.Contains($group)) { $groups[$group] = New-Object System.Collections.Generic.List[object] }
-        $groups[$group].Add($file)
+        $name = MPL-GroupName $group                 # a name Moho's list can hold
+        if (-not $name) { $name = 'AddOns' }
+        if (-not $groups.Contains($name)) { $groups[$name] = New-Object System.Collections.Generic.List[object] }
+        $groups[$name].Add($file)
         $placed[$file.BaseName.ToLower()] = $true
     }
     foreach ($group in $map.Keys) {
@@ -817,17 +1003,20 @@ function MPL-ToolbarApply($s) {
         }
     }
 
-    # --- write the blocks: inside a group Moho already has, or as a new group at the end
+    # --- add the lines
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($line in $baseLines) { $lines.Add($line) }
     $existingGroups = MPL-ListGroups $baseLines
+    $added = New-Object System.Collections.Generic.List[string]
     $count = 0
+    $newGroups = @()
     foreach ($group in $groups.Keys) {
         $entries = @($groups[$group] | ForEach-Object { "$(MPL-ToolKind $_.FullName)`t$($_.BaseName)`t..." })
         $count += $entries.Count
+        foreach ($e in $entries) { $added.Add($e) }
 
         if ($existingGroups -contains $group) {
-            # find the group's line, then the end of its tools (the next group, minus blank lines)
+            # at the end of that group's tools: before the next group, and before any blank lines
             $start = -1
             $groupPattern = '^\s*group\s+MOHO\.Localize\("/Tools/Group/[^=]*=' + [regex]::Escape($group) + '"\)'
             for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -838,14 +1027,15 @@ function MPL-ToolbarApply($s) {
                 if ($lines[$i] -match '^\s*group\s') { $end = $i; break }
             }
             while ($end - 1 -gt $start -and $lines[$end - 1].Trim() -eq '') { $end-- }
-
-            $block = @($MPL.TBBegin, '') + $entries + @($MPL.TBEnd)
-            foreach ($b in $block) { $lines.Insert($end, $b); $end++ }
+            foreach ($e in $entries) { $lines.Insert($end, $e); $end++ }
         } else {
-            $safe = MPL-GroupName $group
-            if (-not $safe) { $safe = 'AddOns' }
-            $block = @($MPL.TBBegin, '', ('group MOHO.Localize("/Tools/Group/' + $safe + '=' + $safe + '")')) + $entries + @($MPL.TBEnd)
-            foreach ($b in $block) { $lines.Add($b) }
+            # a new group at the end, after a blank line - the same way Moho's list does it
+            $header = 'group MOHO.Localize("/Tools/Group/' + $group + '=' + $group + '")'
+            $added.Add($header)
+            $lines.Add('')
+            $lines.Add($header)
+            foreach ($e in $entries) { $lines.Add($e) }
+            $newGroups += $group
         }
     }
 
@@ -855,6 +1045,7 @@ function MPL-ToolbarApply($s) {
         if ($rec.Dirs.Contains('tool') -and (MPL-RemoveIfEmpty $toolDir)) { [void]$rec.Dirs.Remove('tool') }
         $rec.ToolListCreated = $false
         $rec.ToolListHash = ''
+        $rec.ToolListAdded.Clear()
         MPL-SaveRecord $rec
         return 'Toolbar: no add-on tools to sort.'
     }
@@ -864,14 +1055,17 @@ function MPL-ToolbarApply($s) {
     $rec.ToolListCreated = $created
     $rec.ToolListHash = ''
     if ($created) { $rec.ToolListHash = MPL-Hash $listPath }
+    $rec.ToolListAdded.Clear()
+    foreach ($a in $added) { $rec.ToolListAdded.Add($a) }
     MPL-SaveRecord $rec
 
+    if ($newGroups.Count -gt 0) { MPL-Log ("Toolbar: new groups written: " + ($newGroups -join ', ')) }
     $leftInOther = @($addOns.Keys | Where-Object { -not $placed.ContainsKey($_) }).Count
     return "Toolbar: $count add-on tools in $($groups.Count) groups; $leftInOther left in Other."
 }
 
 # Undo the toolbar changes: delete the list if it's the launcher's own unchanged copy,
-# otherwise just take the launcher's blocks out of it.
+# otherwise take out just the lines the launcher added.
 function MPL-ToolbarRestore($s, $rec) {
     $listPath = Join-Path (Join-Path (MPL-ScriptsFolder $s) 'tool') '_tool_list.txt'
     if (Test-Path -LiteralPath $listPath) {
@@ -879,11 +1073,12 @@ function MPL-ToolbarRestore($s, $rec) {
             [void](MPL-RemoveWithRetry $listPath)
         } else {
             $format = MPL-ReadLines $listPath
-            MPL-WriteLines $listPath (MPL-StripOurs $format.Lines) $format
+            MPL-WriteLines $listPath (MPL-StripOurs $format.Lines $rec) $format
         }
     }
     $rec.ToolListCreated = $false
     $rec.ToolListHash = ''
+    $rec.ToolListAdded.Clear()
 }
 
 

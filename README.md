@@ -2,7 +2,7 @@
 
 > ⚠️ **AI-written code.** This program was created by CHEESOID, a working partnership between a human animator, Doug Craven, and Claude, an AI model made by Anthropic. Ideas were conceived and evaluated by Doug. **Every line of the launcher's code was written by Claude (AI)**, then directed and tested by hand by Doug Craven. Please read [AI-NOTICE.md](AI-NOTICE.md), and back up your Moho scripts folder before you first use it.
 
-**Download:** [Moho-Power-Launcher-1.0.0.zip](https://github.com/iamthecrave/Moho-Power-Launcher/releases/download/v1.0.0/Moho-Power-Launcher-1.0.0.zip) · [how to install](#installing)
+**Download:** [Moho-Power-Launcher-1.0.1.zip](https://github.com/iamthecrave/Moho-Power-Launcher/releases/download/v1.0.1/Moho-Power-Launcher-1.0.1.zip) · [how to install](#installing)
 
 
 ## What It Does
@@ -36,6 +36,8 @@ Choose the Moho scripts you want to load at Moho run time. Feature rich and FREE
 2. Double-click **Install Moho Power Launcher**.
 3. If Windows says "Windows protected your PC", click **More info**, then **Run anyway**.
 4. Check the three places it found, then click **Install**.
+
+**Updating:** download the new zip and run its installer the same way; the button says **Update**. Your ticks, saved sets, toolbar groups and library are kept.
 
 To remove it: Start menu > **Moho Power Launcher** > **Uninstall Moho Power Launcher**. Your script library and your own scripts are kept.
 

@@ -95,6 +95,12 @@ if ($Uninstall) {
     Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
 
     $done = "$Name is removed.`n`n$report"
+    if ($settings.ContentFolder) {
+        $sharedDir = MPL-SharedDir $settings.ContentFolder
+        if (Test-Path -LiteralPath $sharedDir) {
+            $done += "`n`nYour ticks and saved sets are kept in:`n$sharedDir`n(other computers using this folder still need them; delete it if none do)"
+        }
+    }
     if (MPL-Exists $library) { $done += "`n`nYour script library is still here, untouched:`n$library" }
     [void](Box $done)
     exit 0
