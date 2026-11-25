@@ -398,17 +398,19 @@ function Save-Ticks {
     foreach ($k in $settings.Selected) { $selected.Add($k) }
 
     $onNow = @{}
+    $showName = @{}
     foreach ($row in $grid.Rows) {
         $package = [string]$row.Cells[4].Value
         if (-not $package) { continue }
+        if (-not $showName.ContainsKey($package)) { $showName[$package] = [string]$row.Cells[1].Value }
         if (-not $onNow.ContainsKey($package)) { $onNow[$package] = $false }
         if ([bool]$row.Cells[0].Value) { $onNow[$package] = $true }
     }
     $switchedOn = @()
     $switchedOff = @()
     foreach ($package in $onNow.Keys) {
-        if ($onNow[$package] -and -not $selected.Contains($package)) { $selected.Add($package); $switchedOn += $package }
-        if (-not $onNow[$package] -and $selected.Contains($package)) { [void]$selected.Remove($package); $switchedOff += $package }
+        if ($onNow[$package] -and -not $selected.Contains($package)) { $selected.Add($package); $switchedOn += $showName[$package] }
+        if (-not $onNow[$package] -and $selected.Contains($package)) { [void]$selected.Remove($package); $switchedOff += $showName[$package] }
     }
     if ($switchedOn.Count -eq 0 -and $switchedOff.Count -eq 0) { return '' }
     $settings.Selected = $selected.ToArray()
@@ -427,9 +429,12 @@ $saveButton.Add_Click({
     MPL-Log ("Sort toolbar saved:`n" + (Describe-Map $saved))
     if ($ticks) { MPL-Log $ticks }
     MPL-SaveLog
-    $message = "Saved:`n`n$(Describe-Map $saved)"
+    # Short message; the full list of groups goes to the log
+    $toolCount = 0
+    foreach ($g in $saved.Keys) { $toolCount += @($saved[$g]).Count }
+    $message = "Saved: $toolCount tools in $($saved.Count) groups."
     if ($ticks) { $message += "`n`n$ticks" }
-    $message += "`n`nClick Launch Moho in the launcher to see it in Moho."
+    $message += "`n`nClick Launch Moho to see it."
     [void][System.Windows.Forms.MessageBox]::Show($message, $Title)
     $form.DialogResult = 'OK'
     $form.Close()
