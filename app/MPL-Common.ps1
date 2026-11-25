@@ -17,7 +17,7 @@
 # ---------- names and places ----------
 $MPL = @{}
 $MPL.Name      = 'Moho Power Launcher'
-$MPL.Version   = '1.1.0'
+$MPL.Version   = '1.2.0a'
 $MPL.MutexName = 'Local\MohoPowerLauncher.Running'   # held while a launcher window is open
 
 $MPL.AppDir   = $PSScriptRoot
@@ -58,9 +58,16 @@ $MPL.IconSuffixes = @('.png', '@2x.png', '_large.png', '_cursor.png')   # a scri
 
 $script:MPLLog      = New-Object System.Collections.Generic.List[string]
 $script:MPLWarnings = New-Object System.Collections.Generic.List[string]
+$script:MPLNotes    = New-Object System.Collections.Generic.List[string]   # good news to show once, e.g. an edit saved
 
 function MPL-Log([string]$message) {
     $script:MPLLog.Add(("{0:yyyy-MM-dd HH:mm:ss}  {1}" -f (Get-Date), $message))
+}
+
+# A note is logged and shown once before Moho starts (nothing to decide)
+function MPL-Note([string]$message) {
+    $script:MPLNotes.Add($message)
+    MPL-Log $message
 }
 
 # A warning is logged and also shown to the user before Moho starts
@@ -227,6 +234,7 @@ function MPL-Flatten($value) {
 #  AutoGroups       e.g. {"ai_": "AI"}: unsorted tools whose name starts ai_ go in Tools-panel group AI
 #  LooseMenuFolder  Scripts-menu folder for single .lua files
 #  Selected, LastConfiguration, Configurations: what is ticked, and saved sets
+#  LeaveAlone       scripts installed through Moho that you chose not to add ("Not these")
 
 function MPL-SharedDir([string]$contentFolder) {
     return (Join-Path $contentFolder $MPL.SharedName)
@@ -293,6 +301,7 @@ function MPL-LoadSettings {
         Selected          = @()
         LastConfiguration = ''
         Configurations    = [ordered]@{}
+        LeaveAlone        = @()
     }
 
     # 1. this computer's settings (1.0.0 kept everything here)
@@ -524,7 +533,7 @@ function MPL-LoadRecord {
         $json = MPL-ReadJson $MPL.Record
         if ($json.Files) {
             foreach ($p in $json.Files.PSObject.Properties) {
-                $r.Files[$p.Name] = @{ Rel = $p.Value.Rel; Hash = $p.Value.Hash; Package = $p.Value.Package }
+                $r.Files[$p.Name] = @{ Rel = $p.Value.Rel; Hash = $p.Value.Hash; Package = $p.Value.Package; Key = [string]$p.Value.Key }
             }
         }
         foreach ($d in (MPL-Flatten $json.Dirs)) {
@@ -684,6 +693,7 @@ function MPL-Apply($s, $chosenItems) {
     }
     MPL-UseShared $s.ContentFolder
     $rec = MPL-LoadRecord
+    $script:MPLLibraryItems = $null                  # read the library afresh for this launch
 
     # --- 1. What the chosen packages want in scripts (rel path -> source).
     #        If two packages carry the same file with different contents, the newer copy wins.
@@ -691,7 +701,7 @@ function MPL-Apply($s, $chosenItems) {
     foreach ($item in $chosenItems) {
         foreach ($f in (MPL-PackageFiles $s $item)) {
             $k = $f.Rel.ToLower()
-            $candidate = @{ Src = $f.Src; Rel = $f.Rel; Package = $item.Name }
+            $candidate = @{ Src = $f.Src; Rel = $f.Rel; Package = $item.Name; Key = $item.Key }
             if (-not $want.ContainsKey($k)) { $want[$k] = $candidate; continue }
 
             $first = $want[$k]
@@ -720,10 +730,38 @@ function MPL-Apply($s, $chosenItems) {
                 continue
             }
             $hashNow = MPL-Hash $dest
-            if ($hashNow -ne $entry.Hash) {                      # you changed it: it's yours now
-                MPL-Warn "You changed '$($entry.Rel)' after the launcher installed it, so it's yours now: the launcher won't remove or replace it."
-                $rec.Files.Remove($k)
-                continue
+            if ($hashNow -ne $entry.Hash) {
+                # You edited it in Moho's scripts folder. Save the edit into your library, so the
+                # launcher keeps your version from now on. Never overwrite anything without a backup.
+                $libraryCopy = MPL-FindLibrarySource $s $entry
+                if (-not $libraryCopy) {
+                    MPL-Warn "You changed '$($entry.Rel)', and its package is no longer in your library, so it's yours now: the launcher won't remove or replace it."
+                    $rec.Files.Remove($k)
+                    MPL-SaveRecord $rec
+                    continue
+                }
+                if ((MPL-Hash $libraryCopy) -eq $entry.Hash) {
+                    try {
+                        [void](MPL-BackupLibraryFile $s $libraryCopy 'before-your-edit')
+                        Copy-Item -LiteralPath $dest -Destination $libraryCopy -Force -ErrorAction Stop
+                        $entry.Hash = $hashNow
+                        MPL-SaveRecord $rec
+                        MPL-Note "Saved your changes to $(Split-Path -Leaf $entry.Rel) ($($entry.Package)) in your library."
+                    } catch {
+                        MPL-Warn "You changed '$($entry.Rel)' but it couldn't be saved to your library ($($_.Exception.Message)). It's yours now: the launcher won't remove or replace it."
+                        $rec.Files.Remove($k)
+                        MPL-SaveRecord $rec
+                        continue
+                    }
+                } else {
+                    # Both changed: your edit here, and the library copy (a newer download?). Keep both.
+                    $saved = MPL-BackupLibraryFile $s $dest 'your-edit' $libraryCopy
+                    MPL-Warn ("You changed '$($entry.Rel)', and the library copy changed too. Both are kept: your edit stays in Moho " +
+                              "(and a copy is in $saved); the library has the other version. The launcher won't remove or replace your edit.")
+                    $rec.Files.Remove($k)
+                    MPL-SaveRecord $rec
+                    continue
+                }
             }
             if ($want.ContainsKey($k) -and (MPL-Hash $want[$k].Src) -eq $hashNow) {
                 $kept++                                          # wanted again, same version: leave it
@@ -785,7 +823,7 @@ function MPL-Apply($s, $chosenItems) {
             $skipped++
             continue
         }
-        $rec.Files[$k] = @{ Rel = $w.Rel; Hash = $sourceHash; Package = $w.Package }
+        $rec.Files[$k] = @{ Rel = $w.Rel; Hash = $sourceHash; Package = $w.Package; Key = $w.Key }
         $added++
         MPL-SaveRecord $rec                                      # recorded at once, so a crash can't orphan it
     }
@@ -803,6 +841,33 @@ function MPL-Apply($s, $chosenItems) {
     $summary += '.'
     MPL-Log $summary
     return $summary
+}
+
+# The library file a launcher-installed file came from, or '' if its package is gone
+function MPL-FindLibrarySource($s, $entry) {
+    if (-not $script:MPLLibraryItems) { $script:MPLLibraryItems = @(MPL-ReadMaster $s) }
+    foreach ($item in $script:MPLLibraryItems) {
+        $same = ($entry.Key -and $item.Key -eq $entry.Key) -or (-not $entry.Key -and $item.Name -eq $entry.Package)
+        if (-not $same) { continue }
+        foreach ($f in (MPL-PackageFiles $s $item)) {
+            if ($f.Rel -ieq $entry.Rel) { return $f.Src }
+        }
+    }
+    return ''
+}
+
+# Copy a file into <library>\_backups\<package folder>\..., named with the date and a reason.
+# $libraryFile says which package it belongs to (defaults to $file itself). Returns the backup's path.
+function MPL-BackupLibraryFile($s, [string]$file, [string]$reason, [string]$libraryFile = '') {
+    if (-not $libraryFile) { $libraryFile = $file }
+    $library = $s.MasterFolder.TrimEnd('\', '/')
+    $inside = $libraryFile.Substring($library.Length).TrimStart('\', '/')
+    $folder = Join-Path (Join-Path $library '_backups') (Split-Path -Parent $inside)
+    if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+    $name = [IO.Path]::GetFileNameWithoutExtension($libraryFile) + ("_{0}_{1:yyyy-MM-dd_HHmmss}" -f $reason, (Get-Date)) + [IO.Path]::GetExtension($libraryFile)
+    $backup = Join-Path $folder $name
+    Copy-Item -LiteralPath $file -Destination $backup -Force
+    return $backup
 }
 
 # Take every launcher-installed file out of the scripts folder (Uninstall, or a changed content folder).
@@ -831,7 +896,7 @@ function MPL-RemoveAll($s) {
 
 # Hand files you installed yourself (with Moho's Scripts > Install Script) over to the launcher,
 # after Install script... has copied them into your library. Only identical files are taken over.
-function MPL-Adopt($s, [string]$package, $files) {
+function MPL-Adopt($s, [string]$package, $files, [string]$key = '') {
     $scripts = MPL-ScriptsFolder $s
     $rec = MPL-LoadRecord
     if ($rec.Broken) { return }
@@ -840,10 +905,180 @@ function MPL-Adopt($s, [string]$package, $files) {
         if (-not (Test-Path -LiteralPath $dest)) { continue }
         $hash = MPL-Hash $dest
         if ($hash -eq (MPL-Hash $f.Src)) {
-            $rec.Files[$f.Rel.ToLower()] = @{ Rel = $f.Rel; Hash = $hash; Package = $package }
+            $rec.Files[$f.Rel.ToLower()] = @{ Rel = $f.Rel; Hash = $hash; Package = $package; Key = $key }
         }
     }
     MPL-SaveRecord $rec
+}
+
+
+# ==========================================================================
+#  Packages, and scripts installed through Moho
+# ==========================================================================
+
+# Suggested display name: words capitalised, the maker's initials as a tag
+#   mr_key_motion  ->  Key Motion (MR)
+function MPL-SuggestName([string]$fileName) {
+    $tag = ''
+    if ($fileName -match '^([A-Za-z]{2})_(.+)$') {
+        $tag = ' (' + $Matches[1].ToUpper() + ')'
+        $fileName = $Matches[2]
+    }
+    $words = ($fileName -replace '_', ' ').Split(' ') |
+             Where-Object { $_ } |
+             ForEach-Object { $_.Substring(0, 1).ToUpper() + $_.Substring(1) }
+    return (($words -join ' ') + $tag)
+}
+
+# A script's icons sit next to it: name.png, name@2x.png, name_large.png, name_cursor.png
+function MPL-IconFiles([string]$folder, [string]$scriptName) {
+    $icons = @()
+    foreach ($suffix in $MPL.IconSuffixes) {
+        $path = Join-Path $folder ($scriptName + $suffix)
+        if (Test-Path -LiteralPath $path) { $icons += Get-Item -LiteralPath $path }
+    }
+    return $icons
+}
+
+# Build a package in the library safely: copy into a hidden folder first (names starting with _
+# are ignored by the launcher), and only when that worked, swap it in for any old package.
+# $files: @{ Src; Rel } list. Returns the package folder.
+function MPL-WritePackage($s, [string]$packagePath, $files, [string]$column, [string]$name) {
+    $library = $s.MasterFolder
+    $staging = Join-Path $library ('_installing_' + [guid]::NewGuid().ToString('N'))
+    try {
+        foreach ($f in $files) {
+            $dest = Join-Path $staging $f.Rel
+            $parent = Split-Path -Parent $dest
+            if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+            Copy-Item -LiteralPath $f.Src -Destination $dest -Force
+        }
+        MPL-WriteLabel $staging $column $name
+    } catch {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+
+    # Swap: move the old package aside (a rename fails cleanly if something has it open),
+    # put the new one in its place, then delete the old one.
+    $oldAside = $null
+    if (Test-Path -LiteralPath $packagePath) {
+        $oldAside = Join-Path $library ('_replaced_' + [guid]::NewGuid().ToString('N'))
+        try {
+            Rename-Item -LiteralPath $packagePath -NewName (Split-Path -Leaf $oldAside)
+        } catch {
+            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+            throw "The old package is in use (is a file from it open?): $($_.Exception.Message)"
+        }
+    }
+    Rename-Item -LiteralPath $staging -NewName (Split-Path -Leaf $packagePath)
+    if ($oldAside) { Remove-Item -LiteralPath $oldAside -Recurse -Force -ErrorAction SilentlyContinue }
+    return $packagePath
+}
+
+# Scripts in Moho's scripts folder (put there by Moho's own Scripts > Install Script, or by hand)
+# that the launcher doesn't know yet: not installed by the launcher, not in the library,
+# and not on the "leave these alone" list.
+function MPL-FindMohoInstalled($s) {
+    $scripts = MPL-ScriptsFolder $s
+    $rec = MPL-LoadRecord
+    if ($rec.Broken -or -not (MPL-Exists $s.MasterFolder)) { return @() }
+
+    $inLibrary = @{}                       # package keys and every .lua name in the library
+    foreach ($entry in @(Get-ChildItem -LiteralPath $s.MasterFolder -Directory) + @(Get-ChildItem -LiteralPath $s.MasterFolder -File -Filter '*.lua')) {
+        $inLibrary[(MPL-Key $entry.Name)] = $true
+        if ($entry.PSIsContainer) {
+            Get-ChildItem -LiteralPath $entry.FullName -Recurse -File -Filter '*.lua' -ErrorAction SilentlyContinue |
+                ForEach-Object { $inLibrary[$_.BaseName.ToLower()] = $true }
+        }
+    }
+    $leaveAlone = @{}
+    foreach ($r in (MPL-Flatten $s.LeaveAlone)) { $leaveAlone[$r.ToLower()] = $true }
+
+    $found = @()
+    foreach ($kind in @('tool', 'button', 'menu', 'layer')) {
+        $dir = Join-Path $scripts $kind
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        foreach ($file in (Get-ChildItem -LiteralPath $dir -Recurse -File -Filter '*.lua')) {
+            $rel = $file.FullName.Substring($scripts.Length).TrimStart('\', '/')
+            if ($file.Name.StartsWith('_')) { continue }
+            if ($rec.Files.ContainsKey($rel.ToLower())) { continue }
+            if ($inLibrary.ContainsKey($file.BaseName.ToLower())) { continue }
+            if ($leaveAlone.ContainsKey($rel.ToLower())) { continue }
+            $found += [pscustomobject]@{ Name = $file.BaseName; File = $file; Rel = $rel }
+        }
+    }
+    return @($found | Sort-Object Name)
+}
+
+# Add those scripts to the library, ticked, in the Unsorted column. Nothing changes in Moho:
+# they're already there and stay there; the launcher just knows about them now.
+# Returns what was added: @{ Key; Name; Rel; Package }.
+function MPL-AddMohoInstalled($s, $found) {
+    $scripts = MPL-ScriptsFolder $s
+    $added = @()
+    foreach ($script in $found) {
+        $files = @(@{ Src = $script.File.FullName; Rel = $script.Rel })
+        $relDir = Split-Path -Parent $script.Rel
+        foreach ($icon in (MPL-IconFiles $script.File.DirectoryName $script.Name)) {
+            $files += @{ Src = $icon.FullName; Rel = (Join-Path $relDir $icon.Name) }
+        }
+        foreach ($resourceName in @($script.Name, $script.Name.ToLower())) {
+            $resources = Join-Path (Join-Path $scripts 'ScriptResources') $resourceName
+            if (-not (Test-Path -LiteralPath $resources)) { continue }
+            foreach ($r in (Get-ChildItem -LiteralPath $resources -Recurse -File)) {
+                $files += @{ Src = $r.FullName; Rel = $r.FullName.Substring($scripts.Length).TrimStart('\', '/') }
+            }
+            break
+        }
+        $name = MPL-SuggestName $script.Name
+        $key = $script.Name.ToLower()
+        $package = Join-Path $s.MasterFolder ($script.Name + $MPL.Suffix)
+        try {
+            [void](MPL-WritePackage $s $package $files 'Unsorted' $name)
+            $inPackage = @($files | ForEach-Object { @{ Src = (Join-Path $package $_.Rel); Rel = $_.Rel } })
+            MPL-Adopt $s $name $inPackage $key
+            $added += [pscustomobject]@{ Key = $key; Name = $name; Rel = $script.Rel; Package = $package }
+            MPL-Log "Added '$name' (installed through Moho) to the library."
+        } catch {
+            MPL-Warn "Couldn't add '$($script.Name)' to your library: $($_.Exception.Message)"
+        }
+    }
+    # ticked, so nothing leaves Moho at the next launch
+    if ($added.Count -gt 0) {
+        $settings = MPL-LoadSettings
+        $ticked = New-Object System.Collections.Generic.List[string]
+        foreach ($k in $settings.Selected) { $ticked.Add($k) }
+        foreach ($a in $added) { if (-not $ticked.Contains($a.Key)) { $ticked.Add($a.Key) } }
+        $settings.Selected = $ticked.ToArray()
+        MPL-SaveSettings $settings
+    }
+    return $added
+}
+
+# "Not these": undo adding them. The launcher lets go of the files (they stay in Moho, untouched),
+# removes the library copies it just made, and never asks about them again.
+function MPL-LeaveAlone($s, $added) {
+    $rec = MPL-LoadRecord
+    $settings = MPL-LoadSettings
+    $leaveAlone = New-Object System.Collections.Generic.List[string]
+    foreach ($r in (MPL-Flatten $settings.LeaveAlone)) { $leaveAlone.Add($r) }
+    $ticked = New-Object System.Collections.Generic.List[string]
+    foreach ($k in $settings.Selected) { $ticked.Add($k) }
+
+    foreach ($a in $added) {
+        foreach ($k in @($rec.Files.Keys)) {
+            if ($rec.Files[$k].Key -eq $a.Key) { $rec.Files.Remove($k) }
+        }
+        if (Test-Path -LiteralPath $a.Package) { Remove-Item -LiteralPath $a.Package -Recurse -Force -ErrorAction SilentlyContinue }
+        if (-not $leaveAlone.Contains($a.Rel.ToLower())) { $leaveAlone.Add($a.Rel.ToLower()) }
+        [void]$ticked.Remove($a.Key)
+        MPL-Log "Left alone: '$($a.Name)' stays in Moho; the launcher won't manage it."
+    }
+    MPL-SaveRecord $rec
+    $settings.LeaveAlone = $leaveAlone.ToArray()
+    $settings.Selected = $ticked.ToArray()
+    MPL-SaveSettings $settings
 }
 
 

@@ -154,6 +154,110 @@ if (-not (MPL-Exists $S.MasterFolder)) { New-Item -ItemType Directory -Path $S.M
 
 
 # ==========================================================================
+#  Scripts you installed through Moho join the launcher by themselves
+# ==========================================================================
+#  They're added ticked, in Unsorted, so nothing changes in Moho. One note says so;
+#  "Not these..." lets you leave any of them out for good.
+
+function Show-AddedNotice($added) {
+    $note = New-Object System.Windows.Forms.Form
+    $note.Text = $MPL.Name
+    $note.StartPosition = 'CenterScreen'
+    $note.FormBorderStyle = 'FixedDialog'
+    $note.MaximizeBox = $false
+    $note.MinimizeBox = $false
+    $note.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    $note.ClientSize = New-Object System.Drawing.Size(460, 330)
+    if ($Icon) { $note.Icon = $Icon }
+
+    $count = @($added).Count
+    $word = 'scripts'
+    if ($count -eq 1) { $word = 'script' }
+    $text = New-Object System.Windows.Forms.Label
+    $text.Text = "Added $count $word you installed through Moho.`nThey're ticked, in the Unsorted column. Drag them to any column."
+    $text.Location = New-Object System.Drawing.Point(16, 14)
+    $text.Size = New-Object System.Drawing.Size(428, 44)
+
+    $list = New-Object System.Windows.Forms.ListBox
+    $list.Location = New-Object System.Drawing.Point(16, 62)
+    $list.Size = New-Object System.Drawing.Size(428, 200)
+    $list.SelectionMode = 'None'
+    foreach ($a in $added) { [void]$list.Items.Add($a.Name) }
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = 'OK'
+    $ok.Size = New-Object System.Drawing.Size(120, 32)
+    $ok.Location = New-Object System.Drawing.Point(324, 280)
+    $ok.DialogResult = 'OK'
+    $notThese = New-Object System.Windows.Forms.Button
+    $notThese.Text = 'Not these...'
+    $notThese.Size = New-Object System.Drawing.Size(120, 32)
+    $notThese.Location = New-Object System.Drawing.Point(196, 280)
+    $notThese.DialogResult = 'No'
+    $note.Controls.AddRange(@($text, $list, $notThese, $ok))
+    $note.AcceptButton = $ok
+    $note.CancelButton = $ok
+    $answer = $note.ShowDialog()
+    $note.Dispose()
+    if ($answer -ne 'No') { return }
+
+    # Not these: tick the ones to leave alone
+    $pick = New-Object System.Windows.Forms.Form
+    $pick.Text = "$($MPL.Name) - Not these"
+    $pick.StartPosition = 'CenterScreen'
+    $pick.FormBorderStyle = 'FixedDialog'
+    $pick.MaximizeBox = $false
+    $pick.MinimizeBox = $false
+    $pick.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    $pick.ClientSize = New-Object System.Drawing.Size(460, 330)
+    if ($Icon) { $pick.Icon = $Icon }
+
+    $pickText = New-Object System.Windows.Forms.Label
+    $pickText.Text = "Tick the scripts the launcher should leave alone.`nThey stay in Moho exactly as they are, and it won't ask about them again."
+    $pickText.Location = New-Object System.Drawing.Point(16, 14)
+    $pickText.Size = New-Object System.Drawing.Size(428, 44)
+    $boxes = New-Object System.Windows.Forms.CheckedListBox
+    $boxes.CheckOnClick = $true
+    $boxes.Location = New-Object System.Drawing.Point(16, 62)
+    $boxes.Size = New-Object System.Drawing.Size(428, 200)
+    foreach ($a in $added) { [void]$boxes.Items.Add($a.Name, $false) }
+
+    $leave = New-Object System.Windows.Forms.Button
+    $leave.Text = 'Leave these alone'
+    $leave.Size = New-Object System.Drawing.Size(150, 32)
+    $leave.Location = New-Object System.Drawing.Point(166, 280)
+    $leave.DialogResult = 'OK'
+    $keepAll = New-Object System.Windows.Forms.Button
+    $keepAll.Text = 'Cancel'
+    $keepAll.Size = New-Object System.Drawing.Size(120, 32)
+    $keepAll.Location = New-Object System.Drawing.Point(324, 280)
+    $keepAll.DialogResult = 'Cancel'
+    $pick.Controls.AddRange(@($pickText, $boxes, $leave, $keepAll))
+    $pick.AcceptButton = $leave
+    $pick.CancelButton = $keepAll
+    if ($pick.ShowDialog() -eq 'OK' -and $boxes.CheckedIndices.Count -gt 0) {
+        $chosen = @()
+        foreach ($i in $boxes.CheckedIndices) { $chosen += @($added)[$i] }
+        MPL-LeaveAlone $S $chosen
+        MPL-SaveLog
+    }
+    $pick.Dispose()
+}
+
+try {
+    $found = @(MPL-FindMohoInstalled $S)
+    if ($found.Count -gt 0) {
+        $added = @(MPL-AddMohoInstalled $S $found)
+        MPL-SaveLog
+        if ($added.Count -gt 0) { Show-AddedNotice $added }
+        $S = MPL-LoadSettings                     # the ticks changed
+    }
+} catch {
+    [void](MPL-Box ("Couldn't check for scripts installed through Moho: " + $_.Exception.Message) 'Warning')
+}
+
+
+# ==========================================================================
 #  The library and what's ticked
 # ==========================================================================
 
@@ -623,8 +727,11 @@ try {
 }
 MPL-SaveLog
 
+if ($script:MPLNotes.Count -gt 0 -and $script:MPLWarnings.Count -eq 0) {
+    [void](MPL-Box (($script:MPLNotes | Select-Object -First 10) -join "`n") 'Information')
+}
 if ($script:MPLWarnings.Count -gt 0) {
-    $message = ($script:MPLWarnings | Select-Object -First 10) -join "`n`n"
+    $message = (@($script:MPLNotes) + @($script:MPLWarnings) | Select-Object -First 10) -join "`n`n"
     if ($script:MPLWarnings.Count -gt 10) { $message += "`n`n(and $($script:MPLWarnings.Count - 10) more in the log)" }
     $answer = MPL-Box ($message + "`n`nStart Moho anyway?") 'Warning' 'YesNo'
     if ($answer -ne 'Yes') { exit 0 }

@@ -117,9 +117,10 @@ Check 'tool list it made is deleted' (-not (Has 'tool/_tool_list.txt'))
 Check 'empty tool folder it made is deleted' (-not (Has 'tool'))
 Check 'empty menu folders it made are deleted' (-not (Has 'menu'))
 
-Write-Host "`n== an edited file becomes yours"
+Write-Host "`n== an edited file whose package is gone becomes yours"
 [void](MPL-Apply $S @($byKey['ab_a_tool']))
 Add-Content (Join-Path $Scripts 'tool/ab_a_tool.lua') '-- my tweak'
+$recX = MPL-LoadRecord; $recX.Files['tool/ab_a_tool.lua'].Key = 'gone'; $recX.Files['tool/ab_a_tool.lua'].Package = 'Gone'; MPL-SaveRecord $recX
 [void](MPL-Apply $S @()); $w = Warnings
 Check 'edited file kept' (Has 'tool/ab_a_tool.lua')
 Check 'and warned' (@($w | Where-Object { $_ -like '*yours now*' }).Count -eq 1)
@@ -217,6 +218,59 @@ $up.ContentFolder = $S2.ContentFolder
 [void](MPL-Apply $up @())
 Check 'switching folders took it out of content3' (-not (Test-Path (Join-Path $C3 'scripts/tool/ab_a_tool.lua')))
 $MPL.DataDir = $machineA.DataDir; $MPL.Settings = $machineA.Settings; $MPL.Log = $machineA.Log
+
+Write-Host "`n== scripts installed through Moho join the launcher by themselves"
+$S4 = MPL-LoadSettings; $S4.ContentFolder = $S2.ContentFolder; $S4.MasterFolder = $Lib; $S4.MohoPath = $Moho
+$sc4 = Join-Path $S4.ContentFolder 'scripts'
+Put (Join-Path $sc4 'tool/zz_moho_made.lua') 'function ZZ:OnMouseDown() end'
+Put (Join-Path $sc4 'tool/zz_moho_made.png') 'icon'
+Put (Join-Path $sc4 'ScriptResources/zz_moho_made/thing.png') 'res'
+Put (Join-Path $sc4 'menu/Mine/wip_script.lua') '-- work in progress'
+$found = @(MPL-FindMohoInstalled $S4)
+Check 'both found' (($found.Name -contains 'zz_moho_made') -and ($found.Name -contains 'wip_script'))
+$added = @(MPL-AddMohoInstalled $S4 $found)
+$S4 = MPL-LoadSettings
+$pkg = Join-Path $Lib 'zz_moho_made_for-moho-install-script-command'
+Check 'package made with script, icon, resources and Unsorted label' ((Test-Path (Join-Path $pkg 'tool/zz_moho_made.lua')) -and (Test-Path (Join-Path $pkg 'tool/zz_moho_made.png')) -and (Test-Path (Join-Path $pkg 'ScriptResources/zz_moho_made/thing.png')) -and ((MPL-ReadLabel $pkg).Column -eq 'Unsorted'))
+Check 'added ticked' ((@($S4.Selected) -contains 'zz_moho_made') -and (@($S4.Selected) -contains 'wip_script'))
+Check 'not found again' (@(MPL-FindMohoInstalled $S4).Count -eq 0)
+$items4 = @(MPL-ReadMaster $S4)
+[void](MPL-Apply $S4 @($items4 | Where-Object { @($S4.Selected) -contains $_.Key }))
+Check 'nothing left Moho at the next launch' ((Test-Path (Join-Path $sc4 'tool/zz_moho_made.lua')) -and (Test-Path (Join-Path $sc4 'menu/Mine/wip_script.lua')))
+
+Write-Host "`n== Not these: left alone for good"
+MPL-LeaveAlone $S4 @($added | Where-Object { $_.Key -eq 'wip_script' })
+$S4 = MPL-LoadSettings
+Check 'its library copy is gone, the original stays in Moho' ((-not (Test-Path (Join-Path $Lib 'wip_script_for-moho-install-script-command'))) -and (Test-Path (Join-Path $sc4 'menu/Mine/wip_script.lua')))
+Check 'not ticked, not managed' ((@($S4.Selected) -notcontains 'wip_script') -and -not ((MPL-LoadRecord).Files.ContainsKey('menu/mine/wip_script.lua')))
+Check 'never offered again' (@(MPL-FindMohoInstalled $S4).Count -eq 0)
+[void](MPL-Apply $S4 @())
+Check 'unticking everything leaves it alone' (Test-Path (Join-Path $sc4 'menu/Mine/wip_script.lua'))
+$items4 = @(MPL-ReadMaster $S4)
+[void](MPL-Apply $S4 @($items4 | Where-Object { $_.Key -eq 'zz_moho_made' }))
+
+Write-Host "`n== an edit in Moho's scripts folder is saved back to the library"
+Add-Content (Join-Path $sc4 'tool/zz_moho_made.lua') '-- my edit'
+$script:MPLNotes.Clear(); [void](Warnings)
+[void](MPL-Apply $S4 @($items4 | Where-Object { $_.Key -eq 'zz_moho_made' }))
+$w = Warnings
+Check 'library copy now has the edit' ((Get-Content (Join-Path $pkg 'tool/zz_moho_made.lua') -Raw) -match 'my edit')
+Check 'old library version backed up' (@(Get-ChildItem (Join-Path $Lib '_backups') -Recurse -Filter 'zz_moho_made_before-your-edit_*').Count -eq 1)
+Check 'a note, no warning' ((@($script:MPLNotes) -join ' ') -match 'Saved your changes' -and $w.Count -eq 0)
+[void](MPL-Apply $S4 @())
+Check 'unticked: removed from Moho (the edit is safe in the library)' (-not (Test-Path (Join-Path $sc4 'tool/zz_moho_made.lua')))
+[void](MPL-Apply $S4 @($items4 | Where-Object { $_.Key -eq 'zz_moho_made' }))
+Check 'ticked again: your edited version comes back' ((Get-Content (Join-Path $sc4 'tool/zz_moho_made.lua') -Raw) -match 'my edit')
+
+Write-Host "`n== both changed: nothing overwritten, both kept"
+Add-Content (Join-Path $sc4 'tool/zz_moho_made.lua') '-- edit two'
+Add-Content (Join-Path $pkg 'tool/zz_moho_made.lua') '-- newer download'
+[void](MPL-Apply $S4 @($items4 | Where-Object { $_.Key -eq 'zz_moho_made' }))
+$w = Warnings
+Check 'your edit stays in Moho' ((Get-Content (Join-Path $sc4 'tool/zz_moho_made.lua') -Raw) -match 'edit two')
+Check 'library keeps the newer version' ((Get-Content (Join-Path $pkg 'tool/zz_moho_made.lua') -Raw) -match 'newer download')
+Check 'your edit also backed up, and warned' ((@(Get-ChildItem (Join-Path $Lib '_backups') -Recurse -Filter 'zz_moho_made_your-edit_*').Count -eq 1) -and (($w -join ' ') -match 'Both are kept'))
+Check '_backups is not shown as a script' (@(MPL-ReadMaster $S4 | Where-Object { $_.Key -like '*backup*' }).Count -eq 0)
 
 Write-Host "`n== log"
 MPL-Log 'tést'; MPL-SaveLog

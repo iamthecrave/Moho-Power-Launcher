@@ -1,11 +1,13 @@
 ﻿# ==========================================================================
 #  Moho Power Launcher - Install script
-#  Adds a script to your script library, so the launcher lists it:
-#   A. a script you already installed with Moho's own Scripts > Install Script, or
-#   B. a download (.zip or .lua).
-#  It makes one package folder per script in the library, labels it with its
-#  column and name (launcher.txt), and can tick it for the next launch.
-#  A download of a script you already have replaces the old package.
+#  Adds a script you downloaded (.zip or .lua) to your script library, so the
+#  launcher lists it. You pick the file first, then its column and name.
+#  It makes one package folder in the library, labels it (launcher.txt), and can
+#  tick it for the next launch. A download of a script you already have replaces
+#  the old package (keeping its column and name).
+#
+#  Scripts you install with Moho's own Scripts > Install Script don't need this:
+#  the launcher adds those by itself when it opens.
 #
 #  Copyright (C) 2026 Cheesoid: Doug Craven and Claude (an AI model by Anthropic)
 #  PolyForm Noncommercial License 1.0.0 - see LICENSE
@@ -39,20 +41,6 @@ if (-not (MPL-Exists $Library)) { New-Item -ItemType Directory -Path $Library -F
 #  Shared helpers
 # ==========================================================================
 
-# Suggested display name: words capitalised, the maker's initials as a tag
-#   mr_key_motion  ->  Key Motion (MR)
-function Suggest-Name([string]$fileName) {
-    $tag = ''
-    if ($fileName -match '^([A-Za-z]{2})_(.+)$') {
-        $tag = ' (' + $Matches[1].ToUpper() + ')'
-        $fileName = $Matches[2]
-    }
-    $words = ($fileName -replace '_', ' ').Split(' ') |
-             Where-Object { $_ } |
-             ForEach-Object { $_.Substring(0, 1).ToUpper() + $_.Substring(1) }
-    return (($words -join ' ') + $tag)
-}
-
 function Tick-ForNextLaunch([string]$key) {
     $settings = MPL-LoadSettings
     $ticked = @($settings.Selected)
@@ -66,51 +54,6 @@ function Test-Label([string]$column, [string]$name) {
     if (-not $column -or -not $name) { Say 'Column and name cannot be empty.' 'Error'; return $false }
     if ($column.Contains('|') -or $name.Contains('|')) { Say "Column and name can't contain '|'." 'Error'; return $false }
     return $true
-}
-
-# A script's icons sit next to it: name.png, name@2x.png, name_large.png, name_cursor.png
-function Get-IconFiles([string]$folder, [string]$scriptName) {
-    $icons = @()
-    foreach ($suffix in $MPL.IconSuffixes) {
-        $path = Join-Path $folder ($scriptName + $suffix)
-        if (Test-Path -LiteralPath $path) { $icons += Get-Item -LiteralPath $path }
-    }
-    return $icons
-}
-
-# Build a package safely: copy into a hidden folder first (names starting with _ are ignored
-# by the launcher), and only when that worked, swap it in for the old package.
-# $files: @{ Src; Rel } list. Returns the package folder.
-function Write-Package([string]$packagePath, $files, [string]$column, [string]$name) {
-    $staging = Join-Path $Library ('_installing_' + [guid]::NewGuid().ToString('N'))
-    try {
-        foreach ($f in $files) {
-            $dest = Join-Path $staging $f.Rel
-            $parent = Split-Path -Parent $dest
-            if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-            Copy-Item -LiteralPath $f.Src -Destination $dest -Force
-        }
-        MPL-WriteLabel $staging $column $name
-    } catch {
-        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
-        throw
-    }
-
-    # Swap: move the old package aside (a rename fails cleanly if something has it open),
-    # put the new one in its place, then delete the old one.
-    $oldAside = $null
-    if (Test-Path -LiteralPath $packagePath) {
-        $oldAside = Join-Path $Library ('_replaced_' + [guid]::NewGuid().ToString('N'))
-        try {
-            Rename-Item -LiteralPath $packagePath -NewName (Split-Path -Leaf $oldAside)
-        } catch {
-            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
-            throw "The old package is in use (is a file from it open?): $($_.Exception.Message)"
-        }
-    }
-    Rename-Item -LiteralPath $staging -NewName (Split-Path -Leaf $packagePath)
-    if ($oldAside) { Remove-Item -LiteralPath $oldAside -Recurse -Force -ErrorAction SilentlyContinue }
-    return $packagePath
 }
 
 function Lbl([string]$text, [int]$top) {
@@ -179,113 +122,7 @@ if ($Columns.Count -eq 0) { $Columns = @('Unsorted') }
 
 
 # ==========================================================================
-#  Scripts in Moho's scripts folder that aren't in the library yet
-# ==========================================================================
-
-$record = MPL-LoadRecord
-$Candidates = @()
-foreach ($kind in @('tool', 'button', 'menu', 'layer')) {
-    $dir = Join-Path $Scripts $kind
-    if (-not (Test-Path -LiteralPath $dir)) { continue }
-    foreach ($file in (Get-ChildItem -LiteralPath $dir -Recurse -File -Filter '*.lua')) {
-        $rel = $file.FullName.Substring($Scripts.Length).TrimStart('\', '/')
-        if ($record.Files.ContainsKey($rel.ToLower())) { continue }        # put there by the launcher
-        if ($inLibrary.ContainsKey($file.BaseName.ToLower())) { continue } # already in the library
-        $Candidates += [pscustomobject]@{ Kind = $kind; Name = $file.BaseName; File = $file; Rel = $rel }
-    }
-}
-$Candidates = @($Candidates | Sort-Object Name)
-
-$Mode = 'existing'
-if ($Candidates.Count -eq 0) {
-    if ((Ask "Every script in Moho's scripts folder is already in your library.`n`nInstall a script you downloaded?") -ne 'Yes') { return }
-    $Mode = 'download'
-}
-
-
-# ==========================================================================
-#  A. A script already in Moho's scripts folder
-# ==========================================================================
-
-if ($Mode -eq 'existing') {
-    $form = New-Form $Title 330
-
-    $scriptList = New-Object System.Windows.Forms.ComboBox
-    $scriptList.DropDownStyle = 'DropDownList'
-    $scriptList.Location = New-Object System.Drawing.Point(20, 42)
-    $scriptList.Size = New-Object System.Drawing.Size(430, 28)
-    foreach ($c in $Candidates) { [void]$scriptList.Items.Add("$($c.Name)   [$($c.Rel)]") }
-
-    $columnBox = New-ColumnBox 110 $Columns[0]
-    $nameBox = New-Object System.Windows.Forms.TextBox
-    $nameBox.Location = New-Object System.Drawing.Point(20, 178)
-    $nameBox.Size = New-Object System.Drawing.Size(430, 28)
-    $tickBox = New-TickBox 222
-
-    $scriptList.Add_SelectedIndexChanged({ $nameBox.Text = Suggest-Name $Candidates[$scriptList.SelectedIndex].Name })
-    $scriptList.SelectedIndex = 0
-
-    $fromDownload = New-DialogButton 'From a download...' 20  276 'Retry'
-    $addButton    = New-DialogButton 'Add to library'     170 276 'OK'
-    $cancelButton = New-DialogButton 'Cancel'             320 276 'Cancel' 130
-    $form.Controls.AddRange(@(
-        (Lbl "A script in Moho's scripts folder, not in your library yet:" 18), $scriptList,
-        (Lbl 'Launcher column:' 86), $columnBox,
-        (Lbl 'Name shown in the launcher:' 154), $nameBox,
-        $tickBox, $fromDownload, $addButton, $cancelButton))
-    $form.AcceptButton = $addButton
-    $form.CancelButton = $cancelButton
-
-    $answer = $form.ShowDialog()
-    if ($answer -eq 'Retry') {
-        $Mode = 'download'
-    } elseif ($answer -ne 'OK') {
-        return
-    } else {
-        $chosen = $Candidates[$scriptList.SelectedIndex]
-        $column = $columnBox.Text.Trim()
-        $name = $nameBox.Text.Trim()
-        if (-not (Test-Label $column $name)) { return }
-
-        $packagePath = Join-Path $Library ($chosen.Name + $MPL.Suffix)
-        if ((Test-Path -LiteralPath $packagePath) -and (Ask "A package for '$($chosen.Name)' already exists.`nReplace it?") -ne 'Yes') { return }
-
-        # the script where it sits (keeps menu subfolders), its icons, and its own resources folder
-        $files = @(@{ Src = $chosen.File.FullName; Rel = $chosen.Rel })
-        $relDir = Split-Path -Parent $chosen.Rel
-        foreach ($icon in (Get-IconFiles $chosen.File.DirectoryName $chosen.Name)) {
-            $files += @{ Src = $icon.FullName; Rel = (Join-Path $relDir $icon.Name) }
-        }
-        foreach ($resourceName in @($chosen.Name, $chosen.Name.ToLower())) {
-            $resources = Join-Path (Join-Path $Scripts 'ScriptResources') $resourceName
-            if (-not (Test-Path -LiteralPath $resources)) { continue }
-            foreach ($r in (Get-ChildItem -LiteralPath $resources -Recurse -File)) {
-                $files += @{ Src = $r.FullName; Rel = $r.FullName.Substring($Scripts.Length).TrimStart('\', '/') }
-            }
-            break
-        }
-
-        try {
-            [void](Write-Package $packagePath $files $column $name)
-            # the copies in Moho's scripts folder are now the launcher's to manage (identical files only)
-            $inPackage = @($files | ForEach-Object { @{ Src = (Join-Path $packagePath $_.Rel); Rel = $_.Rel } })
-            MPL-Adopt $S $name $inPackage
-            if ($tickBox.Checked) { Tick-ForNextLaunch $chosen.Name.ToLower() }
-        } catch {
-            Say ("Couldn't finish: " + $_.Exception.Message) 'Error'
-            return
-        }
-
-        $message = "Added '$name' to the $column column.`n`nIt's in your library now, so the launcher installs it when it's ticked and removes it when it isn't."
-        if (-not $tickBox.Checked) { $message += "`n`nIt's not ticked: next launch takes it out of Moho until you tick it." }
-        Say $message
-        return
-    }
-}
-
-
-# ==========================================================================
-#  B. A download (.zip or .lua)
+#  The download (.zip or .lua)
 # ==========================================================================
 
 $picker = New-Object System.Windows.Forms.OpenFileDialog
@@ -341,7 +178,7 @@ $packagePath = Join-Path $Library ($baseName + $MPL.Suffix)
 
 # Already in the library: this is an update. Keep its column and name as the defaults.
 $defaultColumn = $Columns[0]
-$defaultName = Suggest-Name $baseName
+$defaultName = MPL-SuggestName $baseName
 $existing = @(Get-ChildItem -LiteralPath $Library -Directory | Where-Object { (MPL-Key $_.Name) -eq $key })
 if ($existing.Count -gt 0) {
     if ((Ask "'$baseName' is already in your library ($($existing[0].Name)).`n`nReplace it with this download?") -ne 'Yes') {
@@ -407,12 +244,12 @@ try {
         if ($kindBox.SelectedIndex -eq 0) { $targetDir = 'tool' }
         foreach ($lua in $LooseScripts) {
             $files += @{ Src = $lua.FullName; Rel = (Join-Path $targetDir $lua.Name) }
-            foreach ($icon in (Get-IconFiles $lua.DirectoryName $lua.BaseName)) {
+            foreach ($icon in (MPL-IconFiles $lua.DirectoryName $lua.BaseName)) {
                 $files += @{ Src = $icon.FullName; Rel = (Join-Path $targetDir $icon.Name) }
             }
         }
     }
-    [void](Write-Package $packagePath $files $column $name)
+    [void](MPL-WritePackage $S $packagePath $files $column $name)
     if ($tickBox.Checked) { Tick-ForNextLaunch $key }
 } catch {
     Say ("Couldn't finish: " + $_.Exception.Message + "`n`nYour library was not changed.") 'Error'

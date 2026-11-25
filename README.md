@@ -29,6 +29,14 @@ Choose the Moho scripts you want to load at Moho run time. Feature rich and FREE
 
 
 
+## How it works (this section written by AI)
+
+- **Your library.** Every script lives in its own folder in *scripts master folder*, inside your Moho Pro folder. When you click **Launch Moho**, the launcher copies the ticked scripts into Moho's scripts folder and takes the unticked ones out.
+- **Installed a script with Moho's own Scripts > Install Script?** Nothing to do. Next time the launcher opens, it adds that script by itself: ticked, in the **Unsorted** column. Drag it to any column. If you'd rather the launcher left a script alone (work in progress, say), click **Not these...** and tick it; it stays in Moho as it is.
+- **Downloaded a script?** Click **Install script...**, pick the .zip or .lua, then choose its column and the name to show.
+- **Edited a script in Moho's scripts folder?** The next launch saves your edit into your library, so your version is the one that comes back. The old copy goes to *scripts master folder\_backups* first. If the library copy changed too (a newer download), nothing is overwritten: both versions are kept and the launcher tells you where.
+- **Your own scripts are safe.** The launcher only ever removes files it put there itself.
+
 ## Requirements
 - Moho Pro 14 on Windows. Tested on 14.5.1. Mac is untested.
 
