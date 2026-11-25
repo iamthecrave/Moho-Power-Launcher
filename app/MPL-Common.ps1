@@ -17,7 +17,7 @@
 # ---------- names and places ----------
 $MPL = @{}
 $MPL.Name      = 'Moho Power Launcher'
-$MPL.Version   = '1.0.1'
+$MPL.Version   = '1.1.0a'   # test build letter; the release drops it
 $MPL.MutexName = 'Local\MohoPowerLauncher.Running'   # held while a launcher window is open
 
 $MPL.AppDir   = $PSScriptRoot

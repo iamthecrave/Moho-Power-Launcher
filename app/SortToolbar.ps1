@@ -46,21 +46,44 @@ foreach ($line in $baseLines) {
 # ---------- the add-on tools ----------
 # in the scripts folder now, and in every library package (ticked or not)
 
-$tools = [ordered]@{}            # lower-case name -> @{ Name; From }
-function Add-ToolsFrom([string]$dir, [string]$from) {
-    if (-not (Test-Path -LiteralPath $dir)) { return }
-    foreach ($file in (Get-ChildItem -LiteralPath $dir -Filter '*.lua' -File)) {
-        $key = $file.BaseName.ToLower()
-        if ($mohoTools.ContainsKey($key) -or $tools.Contains($key)) { continue }
-        $tools[$key] = @{ Name = $file.BaseName; From = $from }
-    }
+$tools = [ordered]@{}            # lower-case file name -> @{ File; Name; Package; Yours }
+
+# Installed = in Moho's scripts folder right now
+$installed = @{}
+$installedDir = Join-Path $Scripts 'tool'
+if (Test-Path -LiteralPath $installedDir) {
+    foreach ($file in (Get-ChildItem -LiteralPath $installedDir -Filter '*.lua' -File)) { $installed[$file.BaseName.ToLower()] = $file }
 }
-Add-ToolsFrom (Join-Path $Scripts 'tool') 'installed'
+
+# A readable name: the package's launcher name when the package has just this one tool,
+# otherwise the file name with _ as spaces
+function Get-ShowName([string]$fileName, $label, [int]$toolsInPackage) {
+    if ($label -and $label.Name -and $toolsInPackage -eq 1) { return $label.Name }
+    return ($fileName -replace '_', ' ')
+}
+
+# Package = the library package's key (what the launcher ticks); '' for your own installed script
+function Add-Tool([string]$fileName, [string]$showName, [string]$package) {
+    $key = $fileName.ToLower()
+    if ($mohoTools.ContainsKey($key) -or $tools.Contains($key)) { return }
+    $tools[$key] = @{ File = $fileName; Name = $showName; Package = $package }
+}
+
+# every package in the library (ticked or not), then anything installed that isn't in the library
 if (MPL-Exists $S.MasterFolder) {
-    foreach ($toolDir in (Get-ChildItem -LiteralPath $S.MasterFolder -Recurse -Directory -Filter 'tool')) {
-        Add-ToolsFrom $toolDir.FullName ('library: ' + $toolDir.Parent.Name)
+    foreach ($package in (Get-ChildItem -LiteralPath $S.MasterFolder -Directory | Where-Object { -not $_.Name.StartsWith('_') })) {
+        $label = MPL-ReadLabel $package.FullName
+        $packageKey = MPL-Key $package.Name
+        foreach ($toolDir in (Get-ChildItem -LiteralPath $package.FullName -Recurse -Directory -Filter 'tool')) {
+            $luaFiles = @(Get-ChildItem -LiteralPath $toolDir.FullName -Filter '*.lua' -File)
+            foreach ($lua in $luaFiles) { Add-Tool $lua.BaseName (Get-ShowName $lua.BaseName $label $luaFiles.Count) $packageKey }
+        }
     }
 }
+# installed but not in your library: your own script
+foreach ($file in $installed.Values) { Add-Tool $file.BaseName ($file.BaseName -replace '_', ' ') '' }
+$ticked = @{}
+foreach ($k in $S.Selected) { $ticked[$k] = $true }
 if ($tools.Count -eq 0) {
     [void][System.Windows.Forms.MessageBox]::Show("No add-on tools found yet.`n`nInstall a Tools-panel script with Install script..., then sort it here.", $Title)
     return
@@ -96,14 +119,15 @@ $form.ClientSize = New-Object System.Drawing.Size(660, 560)
 if ($Icon) { $form.Icon = $Icon }
 
 $info = New-Object System.Windows.Forms.Label
-$info.Text = "Pick a Tools-panel group for each add-on tool. Up / Down sets its place in the group.`n'New group...' makes one of your own. (Other) = Moho's Other group."
+$info.Text = "Pick a Tools-panel group for each add-on tool. Up / Down sets its place in the group. (Other) = Moho's Other group.`n" +
+             "Tick = switched on, the same as ticking it in the launcher. A grey tick is your own script: always on."
 $info.Location = New-Object System.Drawing.Point(12, 8)
-$info.Size = New-Object System.Drawing.Size(636, 36)
+$info.Size = New-Object System.Drawing.Size(636, 48)
 $form.Controls.Add($info)
 
 $grid = New-Object System.Windows.Forms.DataGridView
-$grid.Location = New-Object System.Drawing.Point(12, 48)
-$grid.Size = New-Object System.Drawing.Size(530, 460)
+$grid.Location = New-Object System.Drawing.Point(12, 60)
+$grid.Size = New-Object System.Drawing.Size(530, 448)
 $grid.Anchor = 'Top,Bottom,Left,Right'
 $grid.AllowUserToAddRows = $false
 $grid.AllowUserToDeleteRows = $false
@@ -112,22 +136,30 @@ $grid.SelectionMode = 'FullRowSelect'
 $grid.MultiSelect = $false
 $grid.AutoSizeColumnsMode = 'Fill'
 
+# Columns: 0 on/off tick, 1 name, 2 group; hidden: 3 file name (what gets saved), 4 package key
+$tickColumn = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
+$tickColumn.HeaderText = 'On'
+$tickColumn.AutoSizeMode = 'None'
+$tickColumn.Width = 40
+$tickColumn.ToolTipText = 'Ticked = switched on for the next launch (same as the launcher)'
 $toolColumn = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 $toolColumn.HeaderText = 'Tool'
 $toolColumn.ReadOnly = $true
-$toolColumn.FillWeight = 40
-$fromColumn = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-$fromColumn.HeaderText = 'Found in'
-$fromColumn.ReadOnly = $true
-$fromColumn.FillWeight = 35
+$toolColumn.FillWeight = 62
 $groupColumn = New-Object System.Windows.Forms.DataGridViewComboBoxColumn
 $groupColumn.HeaderText = 'Group'
-$groupColumn.FillWeight = 25
+$groupColumn.FillWeight = 38
 $groupColumn.FlatStyle = 'Flat'
 foreach ($group in $script:Groups) { [void]$groupColumn.Items.Add($group) }
+$fileColumn = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$fileColumn.Visible = $false
+$packageColumn = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$packageColumn.Visible = $false
+[void]$grid.Columns.Add($tickColumn)
 [void]$grid.Columns.Add($toolColumn)
-[void]$grid.Columns.Add($fromColumn)
 [void]$grid.Columns.Add($groupColumn)
+[void]$grid.Columns.Add($fileColumn)
+[void]$grid.Columns.Add($packageColumn)
 $form.Controls.Add($grid)
 
 # A pick in the Group drop-down counts straight away (not only when you leave the cell)
@@ -149,16 +181,47 @@ foreach ($key in $tools.Keys) {
     $position = 999
     if ($placeInGroup.ContainsKey($key)) { $position = $placeInGroup[$key] }
     $rows += [pscustomobject]@{
+        On       = ((-not $tools[$key].Package) -or $ticked.ContainsKey($tools[$key].Package))
         Name     = $tools[$key].Name
-        From     = $tools[$key].From
+        File     = $tools[$key].File
+        Package  = $tools[$key].Package
         Group    = $group
         GroupNo  = [array]::IndexOf($script:Groups, $group)
         Position = $position
     }
 }
-foreach ($row in ($rows | Sort-Object GroupNo, Position, Name)) {
-    [void]$grid.Rows.Add($row.Name, $row.From, $row.Group)
+# One grid row. Hovering a name shows the script's file name. Your own scripts get a grey, fixed tick.
+function Add-GridRow([int]$at, [bool]$on, [string]$name, [string]$group, [string]$file, [string]$package) {
+    if ($at -lt 0) { $at = $grid.Rows.Add($on, $name, $group, $file, $package) }
+    else { $grid.Rows.Insert($at, $on, $name, $group, $file, $package) }
+    $row = $grid.Rows[$at]
+    $row.Cells[1].ToolTipText = "$file.lua"
+    if (-not $package) {
+        $row.Cells[0].ReadOnly = $true
+        $row.Cells[0].Style.ForeColor = [System.Drawing.SystemColors]::GrayText
+        $row.Cells[0].ToolTipText = "Your own script (not in your library): always on. The launcher never removes it."
+        $row.Cells[1].Style.ForeColor = [System.Drawing.SystemColors]::GrayText
+    }
+    return $at
 }
+foreach ($row in ($rows | Sort-Object GroupNo, Position, Name)) {
+    [void](Add-GridRow -1 $row.On $row.Name $row.Group $row.File $row.Package)
+}
+
+# Ticking one tool of a package ticks its other tools too: the launcher switches whole packages
+$script:Syncing = $false
+$grid.Add_CellValueChanged({
+    param($sender, $e)
+    if ($script:Syncing -or $e.RowIndex -lt 0 -or $e.ColumnIndex -ne 0) { return }
+    $package = [string]$grid.Rows[$e.RowIndex].Cells[4].Value
+    if (-not $package) { return }
+    $value = [bool]$grid.Rows[$e.RowIndex].Cells[0].Value
+    $script:Syncing = $true
+    foreach ($row in $grid.Rows) {
+        if ([string]$row.Cells[4].Value -eq $package) { $row.Cells[0].Value = $value }
+    }
+    $script:Syncing = $false
+})
 
 
 # ---------- buttons on the right ----------
@@ -173,26 +236,28 @@ function New-SideButton([string]$text, [int]$top) {
     return $b
 }
 
+# Move the selected tool past the next visible one (hidden rows are skipped)
 function Move-Row([int]$step) {
     if ($grid.SelectedRows.Count -eq 0) { return }
     $from = $grid.SelectedRows[0].Index
     $to = $from + $step
+    while ($to -ge 0 -and $to -lt $grid.Rows.Count -and -not $grid.Rows[$to].Visible) { $to += $step }
     if ($to -lt 0 -or $to -ge $grid.Rows.Count) { return }
     $cells = $grid.Rows[$from].Cells
-    $values = @($cells[0].Value, $cells[1].Value, $cells[2].Value)
+    $values = @([bool]$cells[0].Value, $cells[1].Value, $cells[2].Value, $cells[3].Value, $cells[4].Value)
     $grid.Rows.RemoveAt($from)
-    $grid.Rows.Insert($to, $values[0], $values[1], $values[2])
+    [void](Add-GridRow $to $values[0] $values[1] $values[2] $values[3] $values[4])
     $grid.ClearSelection()
     $grid.Rows[$to].Selected = $true
-    $grid.CurrentCell = $grid.Rows[$to].Cells[0]
+    $grid.CurrentCell = $grid.Rows[$to].Cells[1]
 }
 
-$upButton = New-SideButton 'Up' 48
+$upButton = New-SideButton 'Up' 60
 $upButton.Add_Click({ Move-Row -1 })
-$downButton = New-SideButton 'Down' 84
+$downButton = New-SideButton 'Down' 96
 $downButton.Add_Click({ Move-Row 1 })
 
-$newGroupButton = New-SideButton 'New group...' 132
+$newGroupButton = New-SideButton 'New group...' 144
 $newGroupButton.Add_Click({
     $typed = [Microsoft.VisualBasic.Interaction]::InputBox('Name for the new Tools-panel group:', 'New group', '')
     if (-not $typed) { return }
@@ -214,7 +279,7 @@ function Get-GridMap {
         $group = [string]$row.Cells[2].Value
         if (-not $group -or $group -eq $OTHER) { continue }
         if (-not $fromGrid.Contains($group)) { $fromGrid[$group] = New-Object System.Collections.Generic.List[string] }
-        $fromGrid[$group].Add([string]$row.Cells[0].Value)
+        $fromGrid[$group].Add([string]$row.Cells[3].Value)          # the file name
     }
     $result = [ordered]@{}
     foreach ($group in $script:Groups) {
@@ -237,11 +302,6 @@ $saveButton.Size = New-Object System.Drawing.Size(110, 32)
 $saveButton.Location = New-Object System.Drawing.Point(12, 518)
 $saveButton.Anchor = 'Bottom,Left'
 
-$saveNowButton = New-Object System.Windows.Forms.Button
-$saveNowButton.Text = 'Save and update now'
-$saveNowButton.Size = New-Object System.Drawing.Size(170, 32)
-$saveNowButton.Location = New-Object System.Drawing.Point(130, 518)
-$saveNowButton.Anchor = 'Bottom,Left'
 
 $cancelButton = New-Object System.Windows.Forms.Button
 $cancelButton.Text = 'Cancel'
@@ -250,7 +310,20 @@ $cancelButton.Location = New-Object System.Drawing.Point(538, 518)
 $cancelButton.Anchor = 'Bottom,Right'
 $cancelButton.DialogResult = 'Cancel'
 
-$form.Controls.AddRange(@($saveButton, $saveNowButton, $cancelButton))
+$installedOnly = New-Object System.Windows.Forms.CheckBox
+$installedOnly.Text = 'Show ticked only'
+$installedOnly.AutoSize = $true
+$installedOnly.Location = New-Object System.Drawing.Point(140, 524)
+$installedOnly.Anchor = 'Bottom,Left'
+$installedOnly.Add_CheckedChanged({
+    $grid.ClearSelection()
+    $grid.CurrentCell = $null
+    foreach ($row in $grid.Rows) {
+        $row.Visible = (-not $installedOnly.Checked) -or [bool]$row.Cells[0].Value
+    }
+})
+
+$form.Controls.AddRange(@($saveButton, $installedOnly, $cancelButton))
 $form.CancelButton = $cancelButton
 
 # What was saved, in words: for the message and the log
@@ -259,30 +332,46 @@ function Describe-Map($m) {
     return (($m.Keys | ForEach-Object { "$_ : " + (@($m[$_]) -join ', ') }) -join "`n")
 }
 
+# Save the ticks the same way the launcher does (whole packages). Returns what changed, in words.
+function Save-Ticks {
+    $settings = MPL-LoadSettings
+    $selected = New-Object System.Collections.Generic.List[string]
+    foreach ($k in $settings.Selected) { $selected.Add($k) }
+
+    $onNow = @{}
+    foreach ($row in $grid.Rows) {
+        $package = [string]$row.Cells[4].Value
+        if (-not $package) { continue }
+        if (-not $onNow.ContainsKey($package)) { $onNow[$package] = $false }
+        if ([bool]$row.Cells[0].Value) { $onNow[$package] = $true }
+    }
+    $switchedOn = @()
+    $switchedOff = @()
+    foreach ($package in $onNow.Keys) {
+        if ($onNow[$package] -and -not $selected.Contains($package)) { $selected.Add($package); $switchedOn += $package }
+        if (-not $onNow[$package] -and $selected.Contains($package)) { [void]$selected.Remove($package); $switchedOff += $package }
+    }
+    if ($switchedOn.Count -eq 0 -and $switchedOff.Count -eq 0) { return '' }
+    $settings.Selected = $selected.ToArray()
+    MPL-SaveSettings $settings
+    $words = @()
+    if ($switchedOn.Count)  { $words += "Switched on: "  + ($switchedOn  -join ', ') }
+    if ($switchedOff.Count) { $words += "Switched off: " + ($switchedOff -join ', ') }
+    return ($words -join "`n")
+}
+
 $saveButton.Add_Click({
     $grid.EndEdit()
     $saved = Get-GridMap
     MPL-SaveToolbarMap $saved
+    $ticks = Save-Ticks
     MPL-Log ("Sort toolbar saved:`n" + (Describe-Map $saved))
+    if ($ticks) { MPL-Log $ticks }
     MPL-SaveLog
-    [void][System.Windows.Forms.MessageBox]::Show("Saved:`n`n$(Describe-Map $saved)`n`nThe launcher applies it next time it starts Moho.", $Title)
-    $form.DialogResult = 'OK'
-    $form.Close()
-})
-
-$saveNowButton.Add_Click({
-    $grid.EndEdit()
-    if (Get-Process -Name 'Moho' -ErrorAction SilentlyContinue) {
-        [void][System.Windows.Forms.MessageBox]::Show('Close Moho first: it reads the Tools-panel list when it starts.', $Title, 'OK', 'Warning')
-        return
-    }
-    $saved = Get-GridMap
-    MPL-SaveToolbarMap $saved
-    MPL-Log ("Sort toolbar saved:`n" + (Describe-Map $saved))
-    $summary = MPL-ToolbarApply $S
-    MPL-Log $summary
-    MPL-SaveLog
-    [void][System.Windows.Forms.MessageBox]::Show("Saved and updated.`n$summary`nStart Moho to see it.", $Title)
+    $message = "Saved:`n`n$(Describe-Map $saved)"
+    if ($ticks) { $message += "`n`n$ticks" }
+    $message += "`n`nClick Launch Moho in the launcher to see it in Moho."
+    [void][System.Windows.Forms.MessageBox]::Show($message, $Title)
     $form.DialogResult = 'OK'
     $form.Close()
 })
