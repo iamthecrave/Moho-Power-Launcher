@@ -252,7 +252,9 @@ try {
     [void](MPL-WritePackage $S $packagePath $files $column $name)
     if ($tickBox.Checked) { Tick-ForNextLaunch $key }
 } catch {
-    Say ("Couldn't finish: " + $_.Exception.Message + "`n`nYour library was not changed.") 'Error'
+    MPL-Log ("Install script failed: " + $_.Exception.Message)
+    MPL-SaveLog
+    Say ("Couldn't finish: " + $_.Exception.Message + "`n`nYour library was not changed. If Dropbox is busy syncing, wait a moment and try again.") 'Error'
     return
 } finally {
     Remove-TempFolder

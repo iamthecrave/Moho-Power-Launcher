@@ -17,7 +17,7 @@
 # ---------- names and places ----------
 $MPL = @{}
 $MPL.Name      = 'Moho Power Launcher'
-$MPL.Version   = '1.2.0b'
+$MPL.Version   = '1.2.0c'
 $MPL.MutexName = 'Local\MohoPowerLauncher.Running'   # held while a launcher window is open
 
 $MPL.AppDir   = $PSScriptRoot
@@ -129,7 +129,16 @@ function MPL-SameFolder([string]$a, [string]$b) {
 
 # Text files the launcher writes are UTF-8 without a BOM
 function MPL-WriteText([string]$path, [string]$text) {
-    [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+    # a few tries: Dropbox can hold a file for a moment while it syncs
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+            return
+        } catch [System.IO.IOException] {
+            if ($attempt -ge 10) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
 
 # Read a JSON file the launcher wrote. Read as UTF-8 so names with accents survive.
@@ -953,12 +962,27 @@ function MPL-IconFiles([string]$folder, [string]$scriptName) {
     return $icons
 }
 
-# Build a package in the library safely: copy into a hidden folder first (names starting with _
-# are ignored by the launcher), and only when that worked, swap it in for any old package.
+# Try something a few times: Dropbox, OneDrive or antivirus often hold a new file or folder
+# for a moment while they look at it ("being used by another process").
+function MPL-Retry([scriptblock]$action, [string]$what, [int]$tries = 10) {
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            & $action
+            return
+        } catch {
+            if ($attempt -ge $tries) { throw "$what failed: $($_.Exception.Message)" }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
+
+# Build a package in the library safely. It's put together in Windows' temp folder first
+# (outside Dropbox, so nothing grabs it half-made), then copied into the library. An old
+# package of the same name is moved aside first and only deleted once the new one is in.
 # $files: @{ Src; Rel } list. Returns the package folder.
 function MPL-WritePackage($s, [string]$packagePath, $files, [string]$column, [string]$name) {
     $library = $s.MasterFolder
-    $staging = Join-Path $library ('_installing_' + [guid]::NewGuid().ToString('N'))
+    $staging = Join-Path ([IO.Path]::GetTempPath()) ('MPL_package_' + [guid]::NewGuid().ToString('N'))
     try {
         foreach ($f in $files) {
             $dest = Join-Path $staging $f.Rel
@@ -966,26 +990,38 @@ function MPL-WritePackage($s, [string]$packagePath, $files, [string]$column, [st
             if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
             Copy-Item -LiteralPath $f.Src -Destination $dest -Force
         }
+        if (-not (Test-Path -LiteralPath $staging)) { New-Item -ItemType Directory -Path $staging -Force | Out-Null }
         MPL-WriteLabel $staging $column $name
-    } catch {
-        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
-        throw
-    }
 
-    # Swap: move the old package aside (a rename fails cleanly if something has it open),
-    # put the new one in its place, then delete the old one.
-    $oldAside = $null
-    if (Test-Path -LiteralPath $packagePath) {
-        $oldAside = Join-Path $library ('_replaced_' + [guid]::NewGuid().ToString('N'))
-        try {
-            Rename-Item -LiteralPath $packagePath -NewName (Split-Path -Leaf $oldAside)
-        } catch {
-            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
-            throw "The old package is in use (is a file from it open?): $($_.Exception.Message)"
+        # move any old package aside
+        $oldAside = $null
+        if (Test-Path -LiteralPath $packagePath) {
+            $oldAside = Join-Path $library ('_replaced_' + [guid]::NewGuid().ToString('N'))
+            MPL-Retry { Rename-Item -LiteralPath $packagePath -NewName (Split-Path -Leaf $oldAside) -ErrorAction Stop } 'Moving the old package aside'
         }
+
+        # copy the new one in (copying, not renaming: a fresh folder in Dropbox can be held while it syncs)
+        try {
+            MPL-Retry {
+                if (-not (Test-Path -LiteralPath $packagePath)) { New-Item -ItemType Directory -Path $packagePath -Force | Out-Null }
+                Get-ChildItem -LiteralPath $staging -Force | Copy-Item -Destination $packagePath -Recurse -Force -ErrorAction Stop
+            } 'Copying the package into your library'
+        } catch {
+            # put things back as they were
+            Remove-Item -LiteralPath $packagePath -Recurse -Force -ErrorAction SilentlyContinue
+            if ($oldAside) {
+                try { MPL-Retry { Rename-Item -LiteralPath $oldAside -NewName (Split-Path -Leaf $packagePath) -ErrorAction Stop } 'Putting the old package back' }
+                catch { MPL-Warn "The old package is kept as $oldAside" }
+            }
+            throw
+        }
+        if ($oldAside) {
+            try { MPL-Retry { Remove-Item -LiteralPath $oldAside -Recurse -Force -ErrorAction Stop } 'Removing the old package' }
+            catch { MPL-Log "Couldn't remove $oldAside yet (it's ignored by the launcher; delete it any time)." }
+        }
+    } finally {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
-    Rename-Item -LiteralPath $staging -NewName (Split-Path -Leaf $packagePath)
-    if ($oldAside) { Remove-Item -LiteralPath $oldAside -Recurse -Force -ErrorAction SilentlyContinue }
     return $packagePath
 }
 
