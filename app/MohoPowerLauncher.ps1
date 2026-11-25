@@ -273,18 +273,133 @@ function Save-Choices([string[]]$tickedKeys) {
     MPL-SaveSettings $S
 }
 
-# Columns: the ones in settings, then any new ones named in labels, then Unsorted if needed
-$Columns = @($S.Columns)
+# Columns: five fixed ones in the top row (Draw, Rig, Animate, All Purpose, Unsorted), and up to
+# five of your own in a second row, one under each. A column named in a script's label that isn't
+# one of these is added to yours if there's room; otherwise that script shows in Unsorted.
+$FixedColumns = $MPL.FixedColumns
+$MyColumns = @($S.MyColumns)
+$columnsChanged = $false
 foreach ($column in ($Items | ForEach-Object { $_.Group } | Sort-Object -Unique)) {
-    if ($column -ne 'Unsorted' -and $Columns -notcontains $column) { $Columns += $column }
+    if ($FixedColumns -contains $column -or $MyColumns -contains $column) { continue }
+    if ($MyColumns.Count -lt $MPL.MaxMyColumns) { $MyColumns += $column; $columnsChanged = $true }
 }
-if ($Items | Where-Object { $_.Group -eq 'Unsorted' }) { $Columns += 'Unsorted' }
+if ($columnsChanged) { $S.MyColumns = [string[]]$MyColumns; MPL-SaveSettings $S }
+$AllColumns = @($FixedColumns) + @($MyColumns)
+function Get-ShownColumn($item) {
+    if ($AllColumns -contains $item.Group) { return $item.Group }
+    return 'Unsorted'
+}
 
-# Scripts named "... (AI)" (or whatever SplitTag says) get a second box in their column
-$SplitTag = [string]$S.SplitTag
-function Test-Tagged($item) {
-    if (-not $SplitTag) { return $false }
-    return ($item.Name -match ('\(' + [regex]::Escape($SplitTag) + '\)\s*$'))
+# A column name: trimmed, no '|' (the label's separator); '' if empty
+function Clean-ColumnName([string]$typed) {
+    if (-not $typed) { return '' }
+    return ($typed.Trim() -replace '\|', '-')
+}
+
+# Columns...: add, rename or remove your own columns. The five fixed ones stay.
+# Renaming or removing rewrites the labels of the scripts in that column (removed -> Unsorted).
+function Show-ColumnsDialog {
+    $mine = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $S.MyColumns) { $mine.Add($c) }
+
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = "$($MPL.Name) - Columns"
+    $dialog.StartPosition = 'CenterScreen'
+    $dialog.FormBorderStyle = 'FixedDialog'
+    $dialog.MaximizeBox = $false
+    $dialog.MinimizeBox = $false
+    $dialog.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    $dialog.ClientSize = New-Object System.Drawing.Size(420, 300)
+    if ($Icon) { $dialog.Icon = $Icon }
+
+    $info = New-Object System.Windows.Forms.Label
+    $info.Text = "Your own columns (up to $($MPL.MaxMyColumns)). They show in a second row.`n" +
+                 "Draw, Rig, Animate, All Purpose and Unsorted are always there."
+    $info.Location = New-Object System.Drawing.Point(16, 12)
+    $info.Size = New-Object System.Drawing.Size(390, 44)
+    $list = New-Object System.Windows.Forms.ListBox
+    $list.Location = New-Object System.Drawing.Point(16, 60)
+    $list.Size = New-Object System.Drawing.Size(250, 170)
+
+    function Side-Button([string]$text, [int]$top) {
+        $b = New-Object System.Windows.Forms.Button
+        $b.Text = $text
+        $b.Size = New-Object System.Drawing.Size(128, 30)
+        $b.Location = New-Object System.Drawing.Point(276, $top)
+        $dialog.Controls.Add($b)
+        return $b
+    }
+    $addButton    = Side-Button 'Add...' 60
+    $renameButton = Side-Button 'Rename...' 96
+    $removeButton = Side-Button 'Remove' 132
+    $close = New-Object System.Windows.Forms.Button
+    $close.Text = 'Close'
+    $close.Size = New-Object System.Drawing.Size(128, 32)
+    $close.Location = New-Object System.Drawing.Point(276, 252)
+    $close.DialogResult = 'OK'
+    $dialog.Controls.AddRange(@($info, $list, $close))
+    $dialog.AcceptButton = $close
+    $dialog.CancelButton = $close
+
+    function Fill-List {
+        $list.Items.Clear()
+        foreach ($c in $mine) { [void]$list.Items.Add($c) }
+        $addButton.Enabled = ($mine.Count -lt $MPL.MaxMyColumns)
+    }
+    function Test-NewName([string]$name, [string]$except) {
+        if (-not $name) { return $false }
+        foreach ($c in (@($MPL.FixedColumns) + @($mine))) {
+            if ($c -ieq $name -and $c -ne $except) {
+                [void](MPL-Box "There's already a column called '$c'." 'Information')
+                return $false
+            }
+        }
+        return $true
+    }
+    function Relabel([string]$from, [string]$to) {
+        foreach ($item in $Items) {
+            if ($item.Group -eq $from -and -not $item.Loose) { MPL-WriteLabel $item.Path $to $item.Name }
+        }
+    }
+    function Save-Mine {
+        $S.MyColumns = [string[]]$mine.ToArray()
+        MPL-SaveSettings $S
+    }
+    Fill-List
+
+    $addButton.Add_Click({
+        $name = Clean-ColumnName ([Microsoft.VisualBasic.Interaction]::InputBox('Name for the new column:', 'Add column', ''))
+        if (-not (Test-NewName $name '')) { return }
+        $mine.Add($name)
+        Save-Mine
+        Fill-List
+        MPL-Log "Column added: $name"
+    })
+    $renameButton.Add_Click({
+        if ($list.SelectedIndex -lt 0) { [void](MPL-Box 'Click a column in the list first.' 'Information'); return }
+        $old = [string]$list.SelectedItem
+        $name = Clean-ColumnName ([Microsoft.VisualBasic.Interaction]::InputBox("New name for the column '$old':", 'Rename column', $old))
+        if (-not $name -or $name -eq $old -or -not (Test-NewName $name $old)) { return }
+        Relabel $old $name
+        $mine[$mine.IndexOf($old)] = $name
+        Save-Mine
+        Fill-List
+        MPL-Log "Column renamed: $old -> $name"
+    })
+    $removeButton.Add_Click({
+        if ($list.SelectedIndex -lt 0) { [void](MPL-Box 'Click a column in the list first.' 'Information'); return }
+        $old = [string]$list.SelectedItem
+        $answer = MPL-Box "Remove the column '$old'? Its scripts go to Unsorted (nothing is uninstalled)." 'Question' 'YesNo'
+        if ($answer -ne 'Yes') { return }
+        Relabel $old 'Unsorted'
+        [void]$mine.Remove($old)
+        Save-Mine
+        Fill-List
+        MPL-Log "Column removed: $old (its scripts are in Unsorted)"
+    })
+    [void]$dialog.ShowDialog()
+    $dialog.Dispose()
+    MPL-SaveLog
 }
 
 
@@ -301,7 +416,7 @@ $form.Text = "$($MPL.Name)  $($MPL.Version)"
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
-$formWidth = [Math]::Max(940, 12 + $Columns.Count * ($ColumnWidth + 8))
+$formWidth = 12 + $FixedColumns.Count * ($ColumnWidth + 8)
 $form.ClientSize = New-Object System.Drawing.Size($formWidth, ($BoxHeight + 70 + $TopBarHeight))
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
 if ($Icon) { $form.Icon = $Icon }
@@ -318,6 +433,13 @@ $Drag = @{ From = $null; Index = -1; Start = $null; WasTicked = $null; Item = $n
 
 function Move-ToColumn($item, [string]$column) {
     if (-not $item -or -not $column -or $item.Group -eq $column) { return }
+    if ($AllColumns -notcontains $column) {
+        if ($MyColumns.Count -ge $MPL.MaxMyColumns) {
+            [void](MPL-Box "You already have $($MPL.MaxMyColumns) columns of your own. Remove one with Columns... first." 'Information')
+            return
+        }
+        $S.MyColumns = [string[]](@($MyColumns) + $column)
+    }
     if ($item.Loose) {
         [void](MPL-Box "'$($item.Name)' is a single .lua file, so it has no label to change.`n`nUse Install script... on it to make it a full package, then it can be moved." 'Information')
         return
@@ -400,7 +522,7 @@ function Enable-Moving($list) {
         $item = $Panels[$theList.Tag.Title].Items[$index]
 
         $moveTo = New-Object System.Windows.Forms.ToolStripMenuItem ("Move '" + $item.Name + "' to")
-        foreach ($column in ($Columns | Where-Object { $_ -ne 'Unsorted' -and $_ -ne $item.Group })) {
+        foreach ($column in ($AllColumns | Where-Object { $_ -ne $item.Group })) {
             $choice = New-Object System.Windows.Forms.ToolStripMenuItem $column
             $choice.Tag = @{ Item = $item; Column = $column }
             $choice.Add_Click({ param($clicked, $ev) Move-ToColumn $clicked.Tag.Item $clicked.Tag.Column })
@@ -410,8 +532,8 @@ function Enable-Moving($list) {
         $newColumn.Tag = $item
         $newColumn.Add_Click({
             param($clicked, $ev)
-            $name = [Microsoft.VisualBasic.Interaction]::InputBox('Name for the new column:', 'New column', '')
-            if ($name -and $name.Trim()) { Move-ToColumn $clicked.Tag ($name.Trim() -replace '\|', '-') }
+            $name = Clean-ColumnName ([Microsoft.VisualBasic.Interaction]::InputBox('Name for the new column:', 'New column', ''))
+            if ($name) { Move-ToColumn $clicked.Tag $name }
         })
         [void]$moveTo.DropDownItems.Add($newColumn)
         [void]$sender.Items.Add($moveTo)
@@ -479,22 +601,19 @@ function Add-Panel([string]$title, $items, [int]$left, [int]$top, [int]$height, 
     }.GetNewClosure())
 }
 
-# Lay out the columns. A column with both plain and tagged scripts gets two boxes.
+# Lay out the columns: the five fixed ones across the top; each of yours under one of them
 $x = 12
 $top = 10 + $TopBarHeight
-foreach ($column in $Columns) {
-    $inColumn = @($Items | Where-Object { $_.Group -eq $column } | Sort-Object Name)
-    $plain    = @($inColumn | Where-Object { -not (Test-Tagged $_) })
-    $tagged   = @($inColumn | Where-Object { Test-Tagged $_ })
-    if ($plain.Count -gt 0 -and $tagged.Count -gt 0) {
-        $gap = 8
-        $rowHeight = 19
-        $minimum = 74 + $rowHeight * 3 + 6
-        $upper = 74 + $rowHeight * [Math]::Max(3, $plain.Count) + 6      # room for the plain scripts...
-        $upper = [Math]::Min($upper, [int](($BoxHeight - $gap) * 0.55))    # ...but at most 55%
-        $upper = [Math]::Max($upper, $minimum)
-        Add-Panel $column $plain $x $top $upper $column
-        Add-Panel ($SplitTag + ' ' + $column) $tagged $x ($top + $upper + $gap) ($BoxHeight - $upper - $gap) $column
+$gap = 8
+for ($i = 0; $i -lt $FixedColumns.Count; $i++) {
+    $column = $FixedColumns[$i]
+    $inColumn = @($Items | Where-Object { (Get-ShownColumn $_) -eq $column } | Sort-Object Name)
+    if ($i -lt $MyColumns.Count) {
+        $mine = $MyColumns[$i]
+        $inMine = @($Items | Where-Object { $_.Group -eq $mine } | Sort-Object Name)
+        $upper = [int](($BoxHeight - $gap) * 0.55)
+        Add-Panel $column $inColumn $x $top $upper $column
+        Add-Panel $mine $inMine $x ($top + $upper + $gap) ($BoxHeight - $upper - $gap) $mine
     } else {
         Add-Panel $column $inColumn $x $top $BoxHeight $column
     }
@@ -564,7 +683,8 @@ $W = $form.ClientSize.Width
 $installButton  = New-Button 'Install script...' 130 ($W - 146) 10
 $sortButton     = New-Button 'Sort toolbar...'   120 ($W - 274) 10
 $settingsButton = New-Button 'Settings...'        96 ($W - 378) 10
-$form.Controls.AddRange(@($installButton, $sortButton, $settingsButton))
+$columnsButton  = New-Button 'Columns...'         96 ($W - 482) 10
+$form.Controls.AddRange(@($installButton, $sortButton, $settingsButton, $columnsButton))
 
 $script:LoadingConfigs = $false
 function Refresh-ConfigList([string]$select) {
@@ -586,6 +706,7 @@ function Close-For([string]$what) {
 $installButton.Add_Click({  Close-For 'install' })
 $sortButton.Add_Click({     Close-For 'sort' })
 $settingsButton.Add_Click({ Close-For 'settings' })
+$columnsButton.Add_Click({  Close-For 'columns' })
 
 $configList.Add_SelectedIndexChanged({
     $deleteConfig.Enabled = ($configList.SelectedIndex -ge 0)
@@ -661,7 +782,13 @@ Refresh-ConfigList $script:LastConfig
 #  Show it, then do what was chosen
 # ==========================================================================
 
-$result = $form.ShowDialog()
+# "Save and Launch Moho" in Sort toolbar: go straight to launching with the saved ticks
+if ($global:MPLLaunchNow) {
+    $global:MPLLaunchNow = $false
+    $result = 'OK'
+} else {
+    $result = $form.ShowDialog()
+}
 
 if ($result -eq 'Retry') {
     $what = [string]$form.Tag
@@ -671,6 +798,7 @@ if ($result -eq 'Retry') {
             'install'  { & (Join-Path $PSScriptRoot 'InstallScript.ps1') }
             'sort'     { & (Join-Path $PSScriptRoot 'SortToolbar.ps1') }
             'settings' { [void](Show-SettingsDialog) }
+            'columns'  { Show-ColumnsDialog }
             'refresh'  { }
         }
     } catch {

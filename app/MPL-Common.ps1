@@ -17,7 +17,7 @@
 # ---------- names and places ----------
 $MPL = @{}
 $MPL.Name      = 'Moho Power Launcher'
-$MPL.Version   = '1.2.0a'
+$MPL.Version   = '1.2.0b'
 $MPL.MutexName = 'Local\MohoPowerLauncher.Running'   # held while a launcher window is open
 
 $MPL.AppDir   = $PSScriptRoot
@@ -50,6 +50,10 @@ $MPL.TBBegin = '/* Moho Power Launcher: begin */'
 $MPL.TBEnd   = '/* Moho Power Launcher: end */'
 
 $MPL.IconSuffixes = @('.png', '@2x.png', '_large.png', '_cursor.png')   # a script's icon files
+
+# The launcher's columns: five that are always there, plus up to five of your own (MyColumns)
+$MPL.FixedColumns = @('Draw', 'Rig', 'Animate', 'All Purpose', 'Unsorted')
+$MPL.MaxMyColumns = 5
 
 
 # ==========================================================================
@@ -229,8 +233,8 @@ function MPL-Flatten($value) {
 #  LastContentFolder  the content folder the last launch filled (to tidy it if you switch)
 #
 #  Shared (choices.json in <ContentFolder>\Moho Power Launcher):
-#  Columns          the launcher's columns, left to right
-#  SplitTag         e.g. "AI": scripts named "... (AI)" get their own box in each column
+#  MyColumns        your own launcher columns (up to 5), shown in a second row
+#  Columns, SplitTag  from 1.0/1.1 (extra Columns become MyColumns; SplitTag is no longer used)
 #  AutoGroups       e.g. {"ai_": "AI"}: unsorted tools whose name starts ai_ go in Tools-panel group AI
 #  LooseMenuFolder  Scripts-menu folder for single .lua files
 #  Selected, LastConfiguration, Configurations: what is ticked, and saved sets
@@ -294,7 +298,8 @@ function MPL-LoadSettings {
         ContentFolder     = ''
         MasterFolder      = ''
         LastContentFolder = ''
-        Columns           = @('Draw', 'Rig', 'Animate', 'All Purpose')
+        MyColumns         = @()
+        Columns           = @()
         SplitTag          = ''
         AutoGroups        = [ordered]@{}
         LooseMenuFolder   = 'Downloaded'
@@ -333,6 +338,14 @@ function MPL-LoadSettings {
 
     $s.Selected = MPL-Flatten $s.Selected
     $s.Columns  = MPL-Flatten $s.Columns
+    $s.MyColumns = MPL-Flatten $s.MyColumns
+    # 1.0/1.1 kept every column in Columns: anything beyond the fixed ones becomes one of yours
+    foreach ($c in $s.Columns) {
+        if ($MPL.FixedColumns -notcontains $c -and $s.MyColumns -notcontains $c -and $s.MyColumns.Count -lt $MPL.MaxMyColumns) {
+            $s.MyColumns = [string[]](@($s.MyColumns) + $c)
+        }
+    }
+    $s.Columns = @()
     foreach ($name in @($s.Configurations.Keys)) {
         $s.Configurations[$name] = MPL-Flatten $s.Configurations[$name]
     }

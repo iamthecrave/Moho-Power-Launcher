@@ -109,7 +109,7 @@ function New-DialogButton([string]$text, [int]$left, [int]$top, [string]$result,
 # ==========================================================================
 
 $inLibrary = @{}                 # package keys and every .lua name in the library
-$Columns = @($S.Columns)
+$Columns = @($MPL.FixedColumns | Where-Object { $_ -ne 'Unsorted' }) + @($S.MyColumns) + @('Unsorted')
 foreach ($entry in @(Get-ChildItem -LiteralPath $Library -Directory) + @(Get-ChildItem -LiteralPath $Library -File -Filter '*.lua')) {
     $inLibrary[(MPL-Key $entry.Name)] = $true
     if (-not $entry.PSIsContainer) { continue }

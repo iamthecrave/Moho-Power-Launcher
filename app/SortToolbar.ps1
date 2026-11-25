@@ -277,30 +277,95 @@ $newGroupButton.Add_Click({
     if ($grid.SelectedRows.Count -gt 0) { $grid.SelectedRows[0].Cells[2].Value = $name }
 })
 
-# Rename or delete one of your own groups: the group of the selected tool.
-# Moho's own groups (Draw, Bone, Layer...) stay as they are.
+# Rename or delete one of your own groups, in a small window with a drop-down of your groups.
+# It starts on the group of the selected tool. Moho's own groups (Draw, Bone, Layer...) aren't listed.
 $MohoGroups = @(MPL-ListGroups $baseLines)
-function Get-SelectedOwnGroup([string]$action) {
-    if ($grid.SelectedRows.Count -eq 0) {
-        [void][System.Windows.Forms.MessageBox]::Show("Click a tool in the group you want to $action first.", $Title)
-        return ''
+function Get-OwnGroups { return @($script:Groups | Where-Object { $_ -ne $OTHER -and $MohoGroups -notcontains $_ }) }
+
+# Returns @{ Group; NewName } or $null on Cancel
+function Show-GroupDialog([string]$mode) {
+    $own = Get-OwnGroups
+    if ($own.Count -eq 0) {
+        [void][System.Windows.Forms.MessageBox]::Show("You haven't made any groups of your own yet. Use New group... first.`n`nMoho's own groups (Draw, Bone, Layer...) can't be renamed or deleted.", $Title)
+        return $null
     }
-    $group = [string]$grid.SelectedRows[0].Cells[2].Value
-    if (-not $group -or $group -eq $OTHER -or $MohoGroups -contains $group) {
-        [void][System.Windows.Forms.MessageBox]::Show("'$group' is one of Moho's own groups, so it can't be changed here. Only groups you made can be renamed or deleted.", $Title)
-        return ''
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = "$mode group"
+    $dialog.StartPosition = 'CenterParent'
+    $dialog.FormBorderStyle = 'FixedDialog'
+    $dialog.MaximizeBox = $false
+    $dialog.MinimizeBox = $false
+    $dialog.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    if ($Icon) { $dialog.Icon = $Icon }
+
+    $pickLabel = New-Object System.Windows.Forms.Label
+    $pickLabel.Text = 'Group:'
+    $pickLabel.AutoSize = $true
+    $pickLabel.Location = New-Object System.Drawing.Point(16, 18)
+    $pick = New-Object System.Windows.Forms.ComboBox
+    $pick.DropDownStyle = 'DropDownList'
+    $pick.Location = New-Object System.Drawing.Point(110, 14)
+    $pick.Size = New-Object System.Drawing.Size(250, 28)
+    foreach ($g in $own) { [void]$pick.Items.Add($g) }
+    $selectedGroup = ''
+    if ($grid.SelectedRows.Count -gt 0) { $selectedGroup = [string]$grid.SelectedRows[0].Cells[2].Value }
+    $pick.SelectedIndex = [Math]::Max(0, $pick.Items.IndexOf($selectedGroup))
+    $dialog.Controls.AddRange(@($pickLabel, $pick))
+
+    $y = 60
+    $nameBox = $null
+    if ($mode -eq 'Rename') {
+        $nameLabel = New-Object System.Windows.Forms.Label
+        $nameLabel.Text = 'New name:'
+        $nameLabel.AutoSize = $true
+        $nameLabel.Location = New-Object System.Drawing.Point(16, ($y + 4))
+        $nameBox = New-Object System.Windows.Forms.TextBox
+        $nameBox.Location = New-Object System.Drawing.Point(110, $y)
+        $nameBox.Size = New-Object System.Drawing.Size(250, 28)
+        $nameBox.Text = [string]$pick.SelectedItem
+        $pick.Add_SelectedIndexChanged({ $nameBox.Text = [string]$pick.SelectedItem })
+        $dialog.Controls.AddRange(@($nameLabel, $nameBox))
+        $y += 44
+    } else {
+        $note = New-Object System.Windows.Forms.Label
+        $note.Text = 'Its tools go back to (Other).'
+        $note.AutoSize = $true
+        $note.Location = New-Object System.Drawing.Point(110, $y)
+        $dialog.Controls.Add($note)
+        $y += 34
     }
-    return $group
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = $mode
+    $ok.Size = New-Object System.Drawing.Size(110, 32)
+    $ok.Location = New-Object System.Drawing.Point(134, $y)
+    $ok.DialogResult = 'OK'
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = 'Cancel'
+    $cancel.Size = New-Object System.Drawing.Size(110, 32)
+    $cancel.Location = New-Object System.Drawing.Point(250, $y)
+    $cancel.DialogResult = 'Cancel'
+    $dialog.Controls.AddRange(@($ok, $cancel))
+    $dialog.AcceptButton = $ok
+    $dialog.CancelButton = $cancel
+    $dialog.ClientSize = New-Object System.Drawing.Size(380, ($y + 48))
+
+    $answer = $dialog.ShowDialog($form)
+    $result = $null
+    if ($answer -eq 'OK') {
+        $result = @{ Group = [string]$pick.SelectedItem; NewName = '' }
+        if ($nameBox) { $result.NewName = $nameBox.Text }
+    }
+    $dialog.Dispose()
+    return $result
 }
 
 $renameGroupButton = New-SideButton 'Rename group...' 192
 $renameGroupButton.Add_Click({
     $grid.EndEdit()
-    $old = Get-SelectedOwnGroup 'rename'
-    if (-not $old) { return }
-    $typed = [Microsoft.VisualBasic.Interaction]::InputBox("New name for the group '$old':", 'Rename group', $old)
-    if (-not $typed) { return }
-    $new = MPL-GroupName $typed
+    $choice = Show-GroupDialog 'Rename'
+    if (-not $choice) { return }
+    $old = $choice.Group
+    $new = MPL-GroupName $choice.NewName
     if (-not $new -or $new -eq $old) { return }
     if ($groupColumn.Items.Contains($new)) {
         [void][System.Windows.Forms.MessageBox]::Show("There's already a group called '$new'.", $Title)
@@ -317,10 +382,9 @@ $renameGroupButton.Add_Click({
 $deleteGroupButton = New-SideButton 'Delete group...' 228
 $deleteGroupButton.Add_Click({
     $grid.EndEdit()
-    $group = Get-SelectedOwnGroup 'delete'
-    if (-not $group) { return }
-    $answer = [System.Windows.Forms.MessageBox]::Show("Delete the group '$group'? Its tools go back to (Other).", $Title, 'YesNo', 'Question')
-    if ($answer -ne 'Yes') { return }
+    $choice = Show-GroupDialog 'Delete'
+    if (-not $choice) { return }
+    $group = $choice.Group
     foreach ($row in $grid.Rows) { if ([string]$row.Cells[2].Value -eq $group) { $row.Cells[2].Value = $OTHER } }
     $groupColumn.Items.Remove($group)
     $script:Groups = @($script:Groups | Where-Object { $_ -ne $group })
@@ -382,7 +446,14 @@ $installedOnly.Add_CheckedChanged({
     }
 })
 
-$form.Controls.AddRange(@($saveButton, $installedOnly, $cancelButton))
+$launchButton = New-Object System.Windows.Forms.Button
+$launchButton.Text = 'Save and Launch Moho'
+$launchButton.Size = New-Object System.Drawing.Size(180, 32)
+$launchButton.Location = New-Object System.Drawing.Point(350, 518)
+$launchButton.Anchor = 'Bottom,Right'
+$launchButton.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+
+$form.Controls.AddRange(@($saveButton, $installedOnly, $launchButton, $cancelButton))
 $form.CancelButton = $cancelButton
 
 # What was saved, in words: for the message and the log
@@ -421,7 +492,22 @@ function Save-Ticks {
     return ($words -join "`n")
 }
 
-$saveButton.Add_Click({
+# What's switched on, group by group (by the names you see): for the message after saving
+function Describe-Active {
+    $byGroup = [ordered]@{}
+    foreach ($row in $grid.Rows) {
+        if (-not [bool]$row.Cells[0].Value) { continue }
+        $group = [string]$row.Cells[2].Value
+        if ($group -eq $OTHER) { $group = 'Other' }
+        if (-not $byGroup.Contains($group)) { $byGroup[$group] = New-Object System.Collections.Generic.List[string] }
+        $byGroup[$group].Add([string]$row.Cells[1].Value)
+    }
+    if ($byGroup.Count -eq 0) { return 'Nothing is switched on.' }
+    return (($byGroup.Keys | ForEach-Object { "$_ : " + ($byGroup[$_] -join ', ') }) -join "`n")
+}
+
+# Save groups and ticks. Returns the message to show.
+function Save-All {
     $grid.EndEdit()
     $saved = Get-GridMap
     MPL-SaveToolbarMap $saved
@@ -429,13 +515,22 @@ $saveButton.Add_Click({
     MPL-Log ("Sort toolbar saved:`n" + (Describe-Map $saved))
     if ($ticks) { MPL-Log $ticks }
     MPL-SaveLog
-    # Short message; the full list of groups goes to the log
-    $toolCount = 0
-    foreach ($g in $saved.Keys) { $toolCount += @($saved[$g]).Count }
-    $message = "Saved: $toolCount tools in $($saved.Count) groups."
+    $message = "Saved. Switched on:`n`n$(Describe-Active)"
     if ($ticks) { $message += "`n`n$ticks" }
-    $message += "`n`nClick Launch Moho to see it."
+    return $message
+}
+
+$saveButton.Add_Click({
+    $message = Save-All
     [void][System.Windows.Forms.MessageBox]::Show($message, $Title)
+    $form.DialogResult = 'OK'
+    $form.Close()
+})
+
+# Save, then the launcher launches Moho straight away (same as its Launch Moho button)
+$launchButton.Add_Click({
+    [void](Save-All)
+    $global:MPLLaunchNow = $true
     $form.DialogResult = 'OK'
     $form.Close()
 })

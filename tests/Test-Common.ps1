@@ -272,6 +272,14 @@ Check 'library keeps the newer version' ((Get-Content (Join-Path $pkg 'tool/zz_m
 Check 'your edit also backed up, and warned' ((@(Get-ChildItem (Join-Path $Lib '_backups') -Recurse -Filter 'zz_moho_made_your-edit_*').Count -eq 1) -and (($w -join ' ') -match 'Both are kept'))
 Check '_backups is not shown as a script' (@(MPL-ReadMaster $S4 | Where-Object { $_.Key -like '*backup*' }).Count -eq 0)
 
+Write-Host "`n== #5: columns from 1.1 become your own columns"
+$keepSettings = $MPL.Settings
+$MPL.Settings = Join-Path $Root 'cols-settings.json'
+@{ ContentFolder = (Join-Path $Root 'nowhere'); Columns = @('Draw', 'Rig', 'Animate', 'All Purpose', 'Render') } | ConvertTo-Json | Set-Content $MPL.Settings
+$cs = MPL-LoadSettings
+Check 'Render becomes one of yours; the fixed four are not copied' ((@($cs.MyColumns) -join ',') -eq 'Render')
+$MPL.Settings = $keepSettings
+
 Write-Host "`n== log"
 MPL-Log 'tést'; MPL-SaveLog
 Check 'log written as UTF-8' ((Get-Content $MPL.Log -Encoding UTF8 | Select-Object -Last 1) -like '*tést')
