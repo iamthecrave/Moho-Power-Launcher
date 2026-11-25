@@ -190,6 +190,14 @@ foreach ($key in $tools.Keys) {
         Position = $position
     }
 }
+# Switched-on rows are tinted green, so you can see at a glance what's on
+$OnColour  = [System.Drawing.Color]::FromArgb(214, 240, 214)
+$OffColour = [System.Drawing.SystemColors]::Window
+function Paint-Row($row) {
+    if ([bool]$row.Cells[0].Value) { $row.DefaultCellStyle.BackColor = $OnColour }
+    else { $row.DefaultCellStyle.BackColor = $OffColour }
+}
+
 # One grid row. Hovering a name shows the script's file name. Your own scripts get a grey, fixed tick.
 function Add-GridRow([int]$at, [bool]$on, [string]$name, [string]$group, [string]$file, [string]$package) {
     if ($at -lt 0) { $at = $grid.Rows.Add($on, $name, $group, $file, $package) }
@@ -202,6 +210,7 @@ function Add-GridRow([int]$at, [bool]$on, [string]$name, [string]$group, [string
         $row.Cells[0].ToolTipText = "Your own script (not in your library): always on. The launcher never removes it."
         $row.Cells[1].Style.ForeColor = [System.Drawing.SystemColors]::GrayText
     }
+    Paint-Row $row
     return $at
 }
 foreach ($row in ($rows | Sort-Object GroupNo, Position, Name)) {
@@ -218,7 +227,7 @@ $grid.Add_CellValueChanged({
     $value = [bool]$grid.Rows[$e.RowIndex].Cells[0].Value
     $script:Syncing = $true
     foreach ($row in $grid.Rows) {
-        if ([string]$row.Cells[4].Value -eq $package) { $row.Cells[0].Value = $value }
+        if ([string]$row.Cells[4].Value -eq $package) { $row.Cells[0].Value = $value; Paint-Row $row }
     }
     $script:Syncing = $false
 })
@@ -266,6 +275,56 @@ $newGroupButton.Add_Click({
     $groupColumn.Items.Insert($groupColumn.Items.Count - 1, $name)       # before (Other)
     $script:Groups = @($script:Groups | Where-Object { $_ -ne $OTHER }) + @($name, $OTHER)
     if ($grid.SelectedRows.Count -gt 0) { $grid.SelectedRows[0].Cells[2].Value = $name }
+})
+
+# Rename or delete one of your own groups: the group of the selected tool.
+# Moho's own groups (Draw, Bone, Layer...) stay as they are.
+$MohoGroups = @(MPL-ListGroups $baseLines)
+function Get-SelectedOwnGroup([string]$action) {
+    if ($grid.SelectedRows.Count -eq 0) {
+        [void][System.Windows.Forms.MessageBox]::Show("Click a tool in the group you want to $action first.", $Title)
+        return ''
+    }
+    $group = [string]$grid.SelectedRows[0].Cells[2].Value
+    if (-not $group -or $group -eq $OTHER -or $MohoGroups -contains $group) {
+        [void][System.Windows.Forms.MessageBox]::Show("'$group' is one of Moho's own groups, so it can't be changed here. Only groups you made can be renamed or deleted.", $Title)
+        return ''
+    }
+    return $group
+}
+
+$renameGroupButton = New-SideButton 'Rename group...' 192
+$renameGroupButton.Add_Click({
+    $grid.EndEdit()
+    $old = Get-SelectedOwnGroup 'rename'
+    if (-not $old) { return }
+    $typed = [Microsoft.VisualBasic.Interaction]::InputBox("New name for the group '$old':", 'Rename group', $old)
+    if (-not $typed) { return }
+    $new = MPL-GroupName $typed
+    if (-not $new -or $new -eq $old) { return }
+    if ($groupColumn.Items.Contains($new)) {
+        [void][System.Windows.Forms.MessageBox]::Show("There's already a group called '$new'.", $Title)
+        return
+    }
+    # add the new name, move the tools to it, then drop the old name
+    $groupColumn.Items.Insert($groupColumn.Items.IndexOf($old), $new)
+    foreach ($row in $grid.Rows) { if ([string]$row.Cells[2].Value -eq $old) { $row.Cells[2].Value = $new } }
+    $groupColumn.Items.Remove($old)
+    $script:Groups = @($script:Groups | ForEach-Object { if ($_ -eq $old) { $new } else { $_ } })
+    if ($map.Contains($old)) { $map[$new] = $map[$old]; $map.Remove($old) }
+})
+
+$deleteGroupButton = New-SideButton 'Delete group...' 228
+$deleteGroupButton.Add_Click({
+    $grid.EndEdit()
+    $group = Get-SelectedOwnGroup 'delete'
+    if (-not $group) { return }
+    $answer = [System.Windows.Forms.MessageBox]::Show("Delete the group '$group'? Its tools go back to (Other).", $Title, 'YesNo', 'Question')
+    if ($answer -ne 'Yes') { return }
+    foreach ($row in $grid.Rows) { if ([string]$row.Cells[2].Value -eq $group) { $row.Cells[2].Value = $OTHER } }
+    $groupColumn.Items.Remove($group)
+    $script:Groups = @($script:Groups | Where-Object { $_ -ne $group })
+    if ($map.Contains($group)) { $map.Remove($group) }
 })
 
 
