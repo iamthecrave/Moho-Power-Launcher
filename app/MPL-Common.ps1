@@ -17,7 +17,7 @@
 # ---------- names and places ----------
 $MPL = @{}
 $MPL.Name      = 'Moho Power Launcher'
-$MPL.Version   = '1.2.0c'
+$MPL.Version   = '1.2.0c-search'
 $MPL.MutexName = 'Local\MohoPowerLauncher.Running'   # held while a launcher window is open
 
 $MPL.AppDir   = $PSScriptRoot
@@ -1378,4 +1378,100 @@ function MPL-LauncherRunning {
         return $true
     }
     return $false
+}
+
+
+# ==========================================================================
+#  Search  (Doug's build only, for now: issue #9)
+# ==========================================================================
+#  Each script gets one line of lower-case text to search: its launcher name, column, folder
+#  name, file names, toolbar group, and the name and description Moho shows for it (read from
+#  the script's UILabel and Description). Reading every .lua file is the slow part, so what
+#  each file gave is kept in search-cache.json and read again only when the file changes.
+
+# The name and description a Moho script gives itself
+function MPL-ScriptDescription([string]$path) {
+    $out = @()
+    try { $text = [System.IO.File]::ReadAllText($path) } catch { return '' }
+    $found = [regex]::Matches($text, ':(?:Description|UILabel)\s*\(\s*\)\s*return\s+([^\r\n]+)')
+    foreach ($m in $found) {
+        foreach ($q in [regex]::Matches($m.Groups[1].Value, '"((?:[^"\\]|\\.)*)"')) {
+            $v = $q.Groups[1].Value
+            if ($v -match '^/[^=]*=(.*)$') { $v = $Matches[1] }      # MOHO.Localize("/Scripts/.../Description=Text")
+            if ($v.Trim()) { $out += $v.Trim() }
+        }
+    }
+    return (($out | Select-Object -Unique) -join ' ')
+}
+
+# Key -> searchable text, for every item in the library
+function MPL-SearchIndex($s, $items) {
+    $cacheFile = Join-Path $MPL.DataDir 'search-cache.json'
+    $old = @{}
+    if (Test-Path -LiteralPath $cacheFile) {
+        try { foreach ($p in (MPL-ReadJson $cacheFile).PSObject.Properties) { $old[$p.Name] = $p.Value } } catch {}
+    }
+    $toolGroup = @{}
+    try {
+        $map = MPL-LoadToolbarMap
+        foreach ($g in $map.Keys) { foreach ($t in $map[$g]) { $toolGroup[$t.ToLower()] = $g } }
+    } catch {}
+
+    $new = @{}
+    $changed = $false
+    $index = @{}
+    foreach ($item in $items) {
+        $words = New-Object System.Collections.Generic.List[string]
+        $words.Add([string]$item.Name); $words.Add([string]$item.Group); $words.Add((Split-Path $item.Path -Leaf))
+        $files = @()
+        try {
+            if ($item.Loose) { $files = @(Get-Item -LiteralPath $item.Path) }
+            else { $files = @(Get-ChildItem -LiteralPath $item.Path -Recurse -File -Force -ErrorAction SilentlyContinue) }
+        } catch {}
+        foreach ($file in $files) {
+            if ($file.Name -eq $MPL.Label) { continue }
+            $words.Add($file.Name)
+            if ($file.Extension -ne '.lua') { continue }
+            $stem = $file.BaseName.ToLower()
+            if ($toolGroup.ContainsKey($stem)) { $words.Add($toolGroup[$stem]) }
+            $stamp = "$($file.Length)|$($file.LastWriteTimeUtc.Ticks)"
+            $cached = $old[$file.FullName]
+            if ($cached -and $cached.Stamp -eq $stamp) {
+                $text = [string]$cached.Text
+            } else {
+                $text = MPL-ScriptDescription $file.FullName
+                $changed = $true
+            }
+            $new[$file.FullName] = [pscustomobject]@{ Stamp = $stamp; Text = $text }
+            if ($text) { $words.Add($text) }
+        }
+        $index[$item.Key] = ($words -join ' ').ToLower()
+    }
+    if ($changed -or $old.Count -ne $new.Count) {
+        try { MPL-EnsureDataDir; MPL-WriteText $cacheFile ($new | ConvertTo-Json -Depth 3 -Compress) } catch {}
+    }
+    return $index
+}
+
+# What was typed, as @{ Want; Not }: words must all appear (any order, part words count);
+# -word hides matches; "two words" matches the phrase. Capital letters don't matter.
+function MPL-ParseSearch([string]$typed) {
+    $want = @(); $not = @()
+    foreach ($m in [regex]::Matches(([string]$typed).ToLower(), '(-?)"([^"]*)"?|(\S+)')) {
+        if ($m.Groups[3].Success) {
+            $t = $m.Groups[3].Value
+            if ($t.Length -gt 1 -and $t.StartsWith('-')) { $not += $t.Substring(1) } elseif ($t -ne '-') { $want += $t }
+        } else {
+            $t = $m.Groups[2].Value.Trim()
+            if (-not $t) { continue }
+            if ($m.Groups[1].Value -eq '-') { $not += $t } else { $want += $t }
+        }
+    }
+    return @{ Want = $want; Not = $not }
+}
+
+function MPL-SearchMatch([string]$text, $search) {
+    foreach ($w in $search.Want) { if (-not $text.Contains($w)) { return $false } }
+    foreach ($w in $search.Not)  { if ($text.Contains($w)) { return $false } }
+    return $true
 }

@@ -280,6 +280,28 @@ $cs = MPL-LoadSettings
 Check 'Render becomes one of yours; the fixed four are not copied' ((@($cs.MyColumns) -join ',') -eq 'Render')
 $MPL.Settings = $keepSettings
 
+Write-Host "`n== search (Doug's build)"
+$sp = Join-Path $Lib 'gh_bone_keys'
+Put (Join-Path $sp 'tool/gh_bone_keys.lua') "function GH:UILabel()`r`n`treturn MOHO.Localize(`"/Scripts/Tool/GH/Name=Isolate Bone Keys`")`r`nend`r`nfunction GH:Description()`r`n`treturn MOHO.Localize(`"/Scripts/Tool/GH/Description=Shows only the keys of the selected bone`")`r`nend"
+Put (Join-Path $sp 'launcher.txt') 'Rig | Bone Keys (GH)'
+Check 'reads the name and description Moho shows' ((MPL-ScriptDescription (Join-Path $sp 'tool/gh_bone_keys.lua')) -eq 'Isolate Bone Keys Shows only the keys of the selected bone')
+$si = @(MPL-ReadMaster $S)
+$index = MPL-SearchIndex $S $si
+$t = $index['gh_bone_keys']
+Check 'index holds name, column, file name and description' (($t -match 'bone keys \(gh\)') -and ($t -match 'rig') -and ($t -match 'gh_bone_keys\.lua') -and ($t -match 'selected bone'))
+Check 'every script is indexed' ($index.Count -eq $si.Count)
+Check 'words in any order, part words count' (MPL-SearchMatch $t (MPL-ParseSearch 'KEY iso'))
+Check 'a word that is missing fails' (-not (MPL-SearchMatch $t (MPL-ParseSearch 'bone colour')))
+Check '-word hides' (-not (MPL-SearchMatch $t (MPL-ParseSearch 'bone -selected')))
+Check '"phrase" must match as typed' ((MPL-SearchMatch $t (MPL-ParseSearch '"selected bone"')) -and -not (MPL-SearchMatch $t (MPL-ParseSearch '"bone selected"')))
+Check 'empty search hides nothing' ((MPL-ParseSearch '  ').Want.Count -eq 0)
+$cache = Join-Path $MPL.DataDir 'search-cache.json'
+Check 'descriptions cached' ((Test-Path $cache) -and ((Get-Content $cache -Raw) -match 'selected bone'))
+Put (Join-Path $sp 'tool/gh_bone_keys.lua') "function GH:Description() return `"Now about smart warps`" end"
+$t2 = (MPL-SearchIndex $S $si)['gh_bone_keys']
+Check 'a changed script is read again' (($t2 -match 'smart warps') -and ($t2 -notmatch 'selected bone'))
+Remove-Item $sp -Recurse -Force
+
 Write-Host "`n== log"
 MPL-Log 'tést'; MPL-SaveLog
 Check 'log written as UTF-8' ((Get-Content $MPL.Log -Encoding UTF8 | Select-Object -Last 1) -like '*tést')

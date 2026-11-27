@@ -263,6 +263,14 @@ try {
 
 $Items = @(MPL-ReadMaster $S)
 $PreviouslyTicked = @($S.Selected)
+
+# What's ticked, for every script, shown or hidden by a search: key -> $true
+$TickState = @{}
+foreach ($item in $Items) { if ($PreviouslyTicked -contains $item.Key) { $TickState[$item.Key] = $true } }
+
+# Text to search for each script (see MPL-SearchIndex)
+$SearchIndex = @{}
+try { $SearchIndex = MPL-SearchIndex $S $Items } catch { MPL-Log ("Search index: " + $_.Exception.Message) }
 $script:Configs = $S.Configurations
 $script:LastConfig = [string]$S.LastConfiguration
 
@@ -421,7 +429,7 @@ $form.ClientSize = New-Object System.Drawing.Size($formWidth, ($BoxHeight + 70 +
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
 if ($Icon) { $form.Icon = $Icon }
 
-$State = @{ Busy = $false }       # true while a whole column is being ticked at once
+$State = @{ Busy = $false; Filling = $false }   # Busy: a whole column is being ticked at once; Filling: a search is refilling the lists
 $Panels = @{}                     # panel title -> @{ List; Items }
 $PanelOrder = @()
 
@@ -581,9 +589,17 @@ function Add-Panel([string]$title, $items, [int]$left, [int]$top, [int]$height, 
     $frame.Controls.AddRange(@($header, $list, $all, $none))
     $header.BringToFront()
     $form.Controls.Add($frame)
-    $script:Panels[$title] = @{ List = $list; Items = $items }
+    $script:Panels[$title] = @{ List = $list; Items = $items; All = $items; Header = $header }
     $script:PanelOrder += $title
     Enable-Moving $list
+
+    # Keep the tick of every script, so a search can hide it without losing it
+    $list.Add_ItemCheck({
+        param($sender, $e)
+        if ($State.Filling) { return }
+        $item = $Panels[$sender.Tag.Title].Items[$e.Index]
+        if ($e.NewValue -eq 'Checked') { $TickState[$item.Key] = $true } else { $TickState.Remove($item.Key) }
+    })
 
     # the title box is ticked when every script in the box is
     $header.Checked = ($list.Items.Count -gt 0 -and $list.CheckedItems.Count -eq $list.Items.Count)
@@ -635,23 +651,68 @@ if ($Items.Count -eq 0) {
 
 # ---------- ticks ----------
 
+# Every ticked script, including any a search is hiding
+function Get-TickedItems {
+    return @($Items | Where-Object { $TickState[$_.Key] })
+}
+
 function Get-TickedKeys {
-    $keys = @()
-    foreach ($title in $PanelOrder) {
-        $panel = $Panels[$title]
-        foreach ($i in $panel.List.CheckedIndices) { $keys += $panel.Items[$i].Key }
-    }
+    $keys = @(Get-TickedItems | ForEach-Object { $_.Key })
     return ,$keys
 }
 
+# A saved configuration sets every script's tick, shown or hidden
 function Set-TickedKeys($keys) {
     $wanted = MPL-Flatten $keys
+    $TickState.Clear()
+    foreach ($item in $Items) { if ($wanted -contains $item.Key) { $TickState[$item.Key] = $true } }
+    Show-Search
+}
+
+
+# ---------- search: show only the scripts that match (hiding never unticks) ----------
+
+function Show-Search {
+    $search = MPL-ParseSearch $searchBox.Text
+    $searching = ($search.Want.Count + $search.Not.Count) -gt 0
+    $State.Filling = $true
+    $shown = 0; $hiddenTicked = 0
     foreach ($title in $PanelOrder) {
         $panel = $Panels[$title]
-        for ($i = 0; $i -lt $panel.List.Items.Count; $i++) {
-            $panel.List.SetItemChecked($i, ($wanted -contains $panel.Items[$i].Key))
+        $list = $panel.List
+        $visible = @()
+        foreach ($item in $panel.All) {
+            $text = $SearchIndex[$item.Key]
+            if (-not $text) { $text = ([string]$item.Name).ToLower() }
+            if (-not $searching -or (MPL-SearchMatch $text $search)) { $visible += $item }
+            elseif ($TickState[$item.Key]) { $hiddenTicked++ }
         }
+        $list.BeginUpdate()
+        $list.Items.Clear()
+        foreach ($item in $visible) { [void]$list.Items.Add($item.Name, [bool]$TickState[$item.Key]) }
+        $list.EndUpdate()
+        $panel.Items = $visible
+        $panel.Header.Checked = ($list.Items.Count -gt 0 -and $list.CheckedItems.Count -eq $list.Items.Count)
+        $shown += $visible.Count
     }
+    $State.Filling = $false
+
+    if ($searching) {
+        $line = "Search: $shown of $($Items.Count) shown"
+        if ($shown -eq 0) { $line = "Search: no scripts match" }
+        if ($hiddenTicked -gt 0) {
+            $line += "  ·  $hiddenTicked ticked script" + $(if ($hiddenTicked -gt 1) { 's' } else { '' }) + " hidden (still installed at launch)"
+            $libraryLabel.ForeColor = [System.Drawing.Color]::DarkRed
+        } else {
+            $libraryLabel.ForeColor = [System.Drawing.SystemColors]::ControlText
+        }
+        $libraryLabel.Text = $line
+    } else {
+        $libraryLabel.Text = "Library: $($S.MasterFolder)"
+        $libraryLabel.ForeColor = [System.Drawing.SystemColors]::GrayText
+    }
+    $clearSearch.Enabled = ($searchBox.Text -ne '')
+    $global:MPLSearch = $searchBox.Text
 }
 
 
@@ -673,11 +734,49 @@ $configLabel.Location = New-Object System.Drawing.Point(14, 16)
 $configList = New-Object System.Windows.Forms.ComboBox
 $configList.DropDownStyle = 'DropDownList'
 $configList.Location = New-Object System.Drawing.Point(115, 12)
-$configList.Size = New-Object System.Drawing.Size(220, 28)
+$configList.Size = New-Object System.Drawing.Size(180, 28)
 
-$saveConfig   = New-Button 'Save as...' 96 343 10
-$deleteConfig = New-Button 'Delete'     76 445 10
+$saveConfig   = New-Button 'Save as...' 96 303 10
+$deleteConfig = New-Button 'Delete'     76 405 10
 $form.Controls.AddRange(@($configLabel, $configList, $saveConfig, $deleteConfig))
+
+# Search box (Ctrl+F). Enter and Esc stay in the box: Enter must not launch Moho, Esc clears it.
+$searchLabel = New-Object System.Windows.Forms.Label
+$searchLabel.Text = 'Search:'
+$searchLabel.AutoSize = $true
+$searchLabel.Location = New-Object System.Drawing.Point(492, 16)
+$searchBox = New-Object System.Windows.Forms.TextBox
+$searchBox.Location = New-Object System.Drawing.Point(546, 12)
+$searchBox.Size = New-Object System.Drawing.Size(140, 28)
+$clearSearch = New-Button ([string][char]0x00D7) 26 688 11 26
+$clearSearch.Enabled = $false
+$form.Controls.AddRange(@($searchLabel, $searchBox, $clearSearch))
+$tips = New-Object System.Windows.Forms.ToolTip
+$tips.SetToolTip($searchBox, "Shows only scripts that match. Searches names, columns, file names,`ntoolbar groups and Moho's own descriptions.`n`nbone key   both words, any order`n-color      hide matches`n""two words""   the exact phrase`n`nHidden scripts keep their ticks. Esc clears.")
+$tips.SetToolTip($clearSearch, 'Clear the search (Esc)')
+
+$searchTimer = New-Object System.Windows.Forms.Timer
+$searchTimer.Interval = 150                       # wait for a pause in typing
+$searchTimer.Add_Tick({ $searchTimer.Stop(); Show-Search })
+$searchBox.Add_TextChanged({ $searchTimer.Stop(); $searchTimer.Start() })
+$searchBox.Add_PreviewKeyDown({
+    param($sender, $e)
+    if ($e.KeyCode -eq 'Return' -or ($e.KeyCode -eq 'Escape' -and $searchBox.Text -ne '')) { $e.IsInputKey = $true }
+})
+$searchBox.Add_KeyDown({
+    param($sender, $e)
+    if ($e.KeyCode -eq 'Escape' -and $searchBox.Text -ne '') {
+        $searchBox.Text = ''; $searchTimer.Stop(); Show-Search; $e.SuppressKeyPress = $true
+    } elseif ($e.KeyCode -eq 'Return') {
+        $searchTimer.Stop(); Show-Search; $e.SuppressKeyPress = $true
+    }
+})
+$clearSearch.Add_Click({ $searchBox.Text = ''; $searchTimer.Stop(); Show-Search; [void]$searchBox.Focus() })
+$form.KeyPreview = $true
+$form.Add_KeyDown({
+    param($sender, $e)
+    if ($e.Control -and $e.KeyCode -eq 'F') { [void]$searchBox.Focus(); $searchBox.SelectAll(); $e.SuppressKeyPress = $true }
+})
 
 $W = $form.ClientSize.Width
 $installButton  = New-Button 'Install script...' 130 ($W - 146) 10
@@ -776,6 +875,8 @@ $form.Controls.AddRange(@($libraryLabel, $everything, $nothing, $launch, $cancel
 $form.AcceptButton = $launch
 $form.CancelButton = $cancel
 Refresh-ConfigList $script:LastConfig
+if ($global:MPLSearch) { $searchBox.Text = $global:MPLSearch; $searchTimer.Stop() }   # kept when the launcher reopens
+Show-Search
 
 
 # ==========================================================================
@@ -793,6 +894,7 @@ if ($global:MPLLaunchNow) {
 if ($result -eq 'Retry') {
     $what = [string]$form.Tag
     $form.Dispose()
+    if ($what -ne 'refresh') { $global:MPLSearch = '' }   # a moved script keeps the search; anything else starts clear
     try {
         switch ($what) {
             'install'  { & (Join-Path $PSScriptRoot 'InstallScript.ps1') }
@@ -812,11 +914,7 @@ if ($result -ne 'OK') { exit 0 }
 
 $script:LastConfig = ''
 if ($configList.SelectedIndex -ge 0) { $script:LastConfig = [string]$configList.SelectedItem }
-$chosen = @()
-foreach ($title in $PanelOrder) {
-    $panel = $Panels[$title]
-    foreach ($i in $panel.List.CheckedIndices) { $chosen += $panel.Items[$i] }
-}
+$chosen = @(Get-TickedItems)                      # hidden by a search or not
 Save-Choices @($chosen | ForEach-Object { $_.Key })
 $form.Dispose()
 
