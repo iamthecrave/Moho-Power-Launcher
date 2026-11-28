@@ -323,7 +323,8 @@ function MPL-LoadSettings {
         LastConfiguration = ''
         Configurations    = [ordered]@{}
         LeaveAlone        = @()
-        KeepMine          = @()    # "rel|hash": keep your own copy instead of this library version (#10)
+        KeepMine          = @()
+        ShowTooltips      = $true   # Settings > Show tooltips    # "rel|hash": keep your own copy instead of this library version (#10)
     }
 
     # 1. this computer's settings (1.0.0 kept everything here)

@@ -217,6 +217,36 @@ foreach ($row in ($rows | Sort-Object GroupNo, Position, Name)) {
     [void](Add-GridRow -1 $row.On $row.Name $row.Group $row.File $row.Package)
 }
 
+# Clicking the Group header puts the list back in toolbar-group order (a drop-down column can't
+# sort itself). Tools in the same group keep the order they're in now.
+$groupColumn.ToolTipText = 'Sort by toolbar group'
+function Sort-ByGroup {
+    $now = @()
+    $i = 0
+    foreach ($r in $grid.Rows) {
+        $g = [string]$r.Cells[2].Value
+        $no = [array]::IndexOf($script:Groups, $g); if ($no -lt 0) { $no = $script:Groups.Count }
+        $now += [pscustomobject]@{ GroupNo = $no; At = $i; On = [bool]$r.Cells[0].Value; Name = [string]$r.Cells[1].Value
+                                   Group = $g; File = [string]$r.Cells[3].Value; Package = [string]$r.Cells[4].Value; Visible = $r.Visible }
+        $i++
+    }
+    $script:Syncing = $true
+    $grid.Rows.Clear()
+    $sorted = @($now | Sort-Object GroupNo, At)
+    foreach ($r in $sorted) { [void](Add-GridRow -1 $r.On $r.Name $r.Group $r.File $r.Package) }
+    # hidden rows ("Show ticked only") stay hidden; a row can't be hidden while it's the current one
+    $grid.ClearSelection()
+    $grid.CurrentCell = $null
+    for ($k = 0; $k -lt $sorted.Count; $k++) { if (-not $sorted[$k].Visible) { $grid.Rows[$k].Visible = $false } }
+    $script:Syncing = $false
+    foreach ($c in $grid.Columns) { $c.HeaderCell.SortGlyphDirection = 'None' }
+    $grid.ClearSelection()
+}
+$grid.Add_ColumnHeaderMouseClick({
+    param($sender, $e)
+    if ($e.ColumnIndex -eq 2) { Sort-ByGroup }
+})
+
 # Ticking one tool of a package ticks its other tools too: the launcher switches whole packages
 $script:Syncing = $false
 $grid.Add_CellValueChanged({

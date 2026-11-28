@@ -144,13 +144,19 @@ function Show-SettingsDialog {
     $cancel.Size = New-Object System.Drawing.Size(110, 32)
     $cancel.Location = New-Object System.Drawing.Point(496, 252)
     $cancel.DialogResult = 'Cancel'
-    $dialog.Controls.AddRange(@($save, $cancel))
+    $showTips = New-Object System.Windows.Forms.CheckBox
+    $showTips.Text = 'Show tooltips'
+    $showTips.AutoSize = $true
+    $showTips.Location = New-Object System.Drawing.Point(14, 258)
+    $showTips.Checked = ($S.ShowTooltips -ne $false)
+    $dialog.Controls.AddRange(@($showTips, $save, $cancel))
     $dialog.AcceptButton = $save
     $dialog.CancelButton = $cancel
 
     if ($dialog.ShowDialog() -ne 'OK') { return $false }
 
     foreach ($key in $boxes.Keys) { $S[$key] = $boxes[$key].Text.Trim() }
+    $S.ShowTooltips = $showTips.Checked
     if (-not (MPL-Exists $S.MohoPath)) {
         [void](MPL-Box "Moho.exe was not found at:`n$($S.MohoPath)" 'Warning')
     }
@@ -806,8 +812,7 @@ $clearSearch = New-Button ([string][char]0x00D7) 26 194 17 26
 $clearSearch.Enabled = $false
 $groupFind.Controls.AddRange(@($searchLabel, $searchBox, $clearSearch))
 $tips = New-Object System.Windows.Forms.ToolTip
-$tips.SetToolTip($searchBox, "Shows only scripts that match. Searches names, columns, file names,`ntoolbar groups and Moho's own descriptions.`n`nbone key   both words, any order`n-color      hide matches`n""two words""   the exact phrase`n`nHidden scripts keep their ticks. Esc clears.")
-$tips.SetToolTip($clearSearch, 'Clear the search (Esc)')
+$tips.SetToolTip($searchBox, "Show only the scripts that match`n•  Looks in names, columns, file names, toolbar groups and Moho's descriptions`n•  Hidden scripts keep their ticks")
 
 $searchTimer = New-Object System.Windows.Forms.Timer
 $searchTimer.Interval = 150                       # wait for a pause in typing
@@ -840,6 +845,17 @@ $installButton  = New-Button 'Install script...' 124 ($groupTools.Width - 134) 1
 Set-Tint $sortButton    @(214, 240, 214)   # green, like the ticked rows in Sort toolbar
 Set-Tint $installButton @(212, 226, 250)   # blue
 $groupTools.Controls.AddRange(@($sortButton, $installButton))
+
+# Tooltips say what a control does (Doug, 28 Nov). Settings > Show tooltips switches them off.
+$tips.SetToolTip($configLabel,    'Select a custom set of scripts')
+$tips.SetToolTip($configList,     'Select a custom set of scripts')
+$tips.SetToolTip($saveConfig,     'Save the currently ticked scripts as a set')
+$tips.SetToolTip($deleteConfig,   'Delete the chosen set (your scripts stay)')
+$tips.SetToolTip($columnsButton,  "Add, rename or remove your own columns`n•  Up to five, in a second row`n•  A removed column's scripts go to Unsorted")
+$tips.SetToolTip($settingsButton, 'Set file locations')
+$tips.SetToolTip($sortButton,     "Arrange scripts on Moho's toolbar`n•  Assign scripts to toolbar groups`n•  Create your own toolbar groups`n•  Reorder scripts")
+$tips.SetToolTip($installButton,  'Install a downloaded script from a .zip file')
+$tips.Active = ($S.ShowTooltips -ne $false)
 
 $script:LoadingConfigs = $false
 function Refresh-ConfigList([string]$select) {
