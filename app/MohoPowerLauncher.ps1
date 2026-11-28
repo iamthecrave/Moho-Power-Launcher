@@ -16,6 +16,31 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName Microsoft.VisualBasic          # for InputBox and AppActivate
 [System.Windows.Forms.Application]::EnableVisualStyles()
+
+# Tick lists that shade ticked rows green, like Sort toolbar. If this can't be built on a
+# computer, the columns use Windows' plain tick list instead (same behaviour, no shading).
+$script:TickListType = $null
+try {
+    if (-not ('CheesoidMPL.TickList' -as [type])) {
+        Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -Language CSharp -TypeDefinition @'
+using System.Drawing;
+using System.Windows.Forms;
+namespace CheesoidMPL {
+    public class TickList : CheckedListBox {
+        public static Color OnColour = Color.FromArgb(214, 240, 214);
+        protected override void OnDrawItem(DrawItemEventArgs e) {
+            if (e.Index >= 0 && e.Index < Items.Count && GetItemChecked(e.Index)) {
+                e = new DrawItemEventArgs(e.Graphics, e.Font, e.Bounds, e.Index,
+                        e.State & ~DrawItemState.Selected, SystemColors.WindowText, OnColour);
+            }
+            base.OnDrawItem(e);
+        }
+    }
+}
+'@
+    }
+    $script:TickListType = 'CheesoidMPL.TickList'
+} catch { $script:TickListType = $null }
 $ErrorActionPreference = 'Stop'
 
 $Self = $MyInvocation.MyCommand.Path
@@ -154,11 +179,123 @@ if (-not (MPL-Exists $S.MasterFolder)) { New-Item -ItemType Directory -Path $S.M
 
 
 # ==========================================================================
+#  Scripts you installed through Moho join the launcher by themselves
+# ==========================================================================
+#  They're added ticked, in Unsorted, so nothing changes in Moho. One note says so;
+#  "Not these..." lets you leave any of them out for good.
+
+function Show-AddedNotice($added) {
+    $note = New-Object System.Windows.Forms.Form
+    $note.Text = $MPL.Name
+    $note.StartPosition = 'CenterScreen'
+    $note.FormBorderStyle = 'FixedDialog'
+    $note.MaximizeBox = $false
+    $note.MinimizeBox = $false
+    $note.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    $note.ClientSize = New-Object System.Drawing.Size(460, 330)
+    if ($Icon) { $note.Icon = $Icon }
+
+    $count = @($added).Count
+    $word = 'scripts'
+    if ($count -eq 1) { $word = 'script' }
+    $text = New-Object System.Windows.Forms.Label
+    $text.Text = "Added $count $word you installed through Moho.`nThey're ticked, in the Unsorted column. Drag them to any column."
+    $text.Location = New-Object System.Drawing.Point(16, 14)
+    $text.Size = New-Object System.Drawing.Size(428, 44)
+
+    $list = New-Object System.Windows.Forms.ListBox
+    $list.Location = New-Object System.Drawing.Point(16, 62)
+    $list.Size = New-Object System.Drawing.Size(428, 200)
+    $list.SelectionMode = 'None'
+    foreach ($a in $added) { [void]$list.Items.Add($a.Name) }
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = 'OK'
+    $ok.Size = New-Object System.Drawing.Size(120, 32)
+    $ok.Location = New-Object System.Drawing.Point(324, 280)
+    $ok.DialogResult = 'OK'
+    $notThese = New-Object System.Windows.Forms.Button
+    $notThese.Text = 'Not these...'
+    $notThese.Size = New-Object System.Drawing.Size(120, 32)
+    $notThese.Location = New-Object System.Drawing.Point(196, 280)
+    $notThese.DialogResult = 'No'
+    $note.Controls.AddRange(@($text, $list, $notThese, $ok))
+    $note.AcceptButton = $ok
+    $note.CancelButton = $ok
+    $answer = $note.ShowDialog()
+    $note.Dispose()
+    if ($answer -ne 'No') { return }
+
+    # Not these: tick the ones to leave alone
+    $pick = New-Object System.Windows.Forms.Form
+    $pick.Text = "$($MPL.Name) - Not these"
+    $pick.StartPosition = 'CenterScreen'
+    $pick.FormBorderStyle = 'FixedDialog'
+    $pick.MaximizeBox = $false
+    $pick.MinimizeBox = $false
+    $pick.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    $pick.ClientSize = New-Object System.Drawing.Size(460, 330)
+    if ($Icon) { $pick.Icon = $Icon }
+
+    $pickText = New-Object System.Windows.Forms.Label
+    $pickText.Text = "Tick the scripts the launcher should leave alone.`nThey stay in Moho exactly as they are, and it won't ask about them again."
+    $pickText.Location = New-Object System.Drawing.Point(16, 14)
+    $pickText.Size = New-Object System.Drawing.Size(428, 44)
+    $boxes = New-Object System.Windows.Forms.CheckedListBox
+    $boxes.CheckOnClick = $true
+    $boxes.Location = New-Object System.Drawing.Point(16, 62)
+    $boxes.Size = New-Object System.Drawing.Size(428, 200)
+    foreach ($a in $added) { [void]$boxes.Items.Add($a.Name, $false) }
+
+    $leave = New-Object System.Windows.Forms.Button
+    $leave.Text = 'Leave these alone'
+    $leave.Size = New-Object System.Drawing.Size(150, 32)
+    $leave.Location = New-Object System.Drawing.Point(166, 280)
+    $leave.DialogResult = 'OK'
+    $keepAll = New-Object System.Windows.Forms.Button
+    $keepAll.Text = 'Cancel'
+    $keepAll.Size = New-Object System.Drawing.Size(120, 32)
+    $keepAll.Location = New-Object System.Drawing.Point(324, 280)
+    $keepAll.DialogResult = 'Cancel'
+    $pick.Controls.AddRange(@($pickText, $boxes, $leave, $keepAll))
+    $pick.AcceptButton = $leave
+    $pick.CancelButton = $keepAll
+    if ($pick.ShowDialog() -eq 'OK' -and $boxes.CheckedIndices.Count -gt 0) {
+        $chosen = @()
+        foreach ($i in $boxes.CheckedIndices) { $chosen += @($added)[$i] }
+        MPL-LeaveAlone $S $chosen
+        MPL-SaveLog
+    }
+    $pick.Dispose()
+}
+
+try {
+    $found = @(MPL-FindMohoInstalled $S)
+    if ($found.Count -gt 0) {
+        $added = @(MPL-AddMohoInstalled $S $found)
+        MPL-SaveLog
+        if ($added.Count -gt 0) { Show-AddedNotice $added }
+        $S = MPL-LoadSettings                     # the ticks changed
+    }
+} catch {
+    [void](MPL-Box ("Couldn't check for scripts installed through Moho: " + $_.Exception.Message) 'Warning')
+}
+
+
+# ==========================================================================
 #  The library and what's ticked
 # ==========================================================================
 
 $Items = @(MPL-ReadMaster $S)
 $PreviouslyTicked = @($S.Selected)
+
+# What's ticked, for every script, shown or hidden by a search: key -> $true
+$TickState = @{}
+foreach ($item in $Items) { if ($PreviouslyTicked -contains $item.Key) { $TickState[$item.Key] = $true } }
+
+# Text to search for each script (see MPL-SearchIndex)
+$SearchIndex = @{}
+try { $SearchIndex = MPL-SearchIndex $S $Items } catch { MPL-Log ("Search index: " + $_.Exception.Message) }
 $script:Configs = $S.Configurations
 $script:LastConfig = [string]$S.LastConfiguration
 
@@ -169,18 +306,133 @@ function Save-Choices([string[]]$tickedKeys) {
     MPL-SaveSettings $S
 }
 
-# Columns: the ones in settings, then any new ones named in labels, then Unsorted if needed
-$Columns = @($S.Columns)
+# Columns: five fixed ones in the top row (Draw, Rig, Animate, All Purpose, Unsorted), and up to
+# five of your own in a second row, one under each. A column named in a script's label that isn't
+# one of these is added to yours if there's room; otherwise that script shows in Unsorted.
+$FixedColumns = $MPL.FixedColumns
+$MyColumns = @($S.MyColumns)
+$columnsChanged = $false
 foreach ($column in ($Items | ForEach-Object { $_.Group } | Sort-Object -Unique)) {
-    if ($column -ne 'Unsorted' -and $Columns -notcontains $column) { $Columns += $column }
+    if ($FixedColumns -contains $column -or $MyColumns -contains $column) { continue }
+    if ($MyColumns.Count -lt $MPL.MaxMyColumns) { $MyColumns += $column; $columnsChanged = $true }
 }
-if ($Items | Where-Object { $_.Group -eq 'Unsorted' }) { $Columns += 'Unsorted' }
+if ($columnsChanged) { $S.MyColumns = [string[]]$MyColumns; MPL-SaveSettings $S }
+$AllColumns = @($FixedColumns) + @($MyColumns)
+function Get-ShownColumn($item) {
+    if ($AllColumns -contains $item.Group) { return $item.Group }
+    return 'Unsorted'
+}
 
-# Scripts named "... (AI)" (or whatever SplitTag says) get a second box in their column
-$SplitTag = [string]$S.SplitTag
-function Test-Tagged($item) {
-    if (-not $SplitTag) { return $false }
-    return ($item.Name -match ('\(' + [regex]::Escape($SplitTag) + '\)\s*$'))
+# A column name: trimmed, no '|' (the label's separator); '' if empty
+function Clean-ColumnName([string]$typed) {
+    if (-not $typed) { return '' }
+    return ($typed.Trim() -replace '\|', '-')
+}
+
+# Columns...: add, rename or remove your own columns. The five fixed ones stay.
+# Renaming or removing rewrites the labels of the scripts in that column (removed -> Unsorted).
+function Show-ColumnsDialog {
+    $mine = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $S.MyColumns) { $mine.Add($c) }
+
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = "$($MPL.Name) - Columns"
+    $dialog.StartPosition = 'CenterScreen'
+    $dialog.FormBorderStyle = 'FixedDialog'
+    $dialog.MaximizeBox = $false
+    $dialog.MinimizeBox = $false
+    $dialog.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    $dialog.ClientSize = New-Object System.Drawing.Size(420, 300)
+    if ($Icon) { $dialog.Icon = $Icon }
+
+    $info = New-Object System.Windows.Forms.Label
+    $info.Text = "Your own columns (up to $($MPL.MaxMyColumns)). They show in a second row.`n" +
+                 "Draw, Rig, Animate, All Purpose and Unsorted are always there."
+    $info.Location = New-Object System.Drawing.Point(16, 12)
+    $info.Size = New-Object System.Drawing.Size(390, 44)
+    $list = New-Object System.Windows.Forms.ListBox
+    $list.Location = New-Object System.Drawing.Point(16, 60)
+    $list.Size = New-Object System.Drawing.Size(250, 170)
+
+    function Side-Button([string]$text, [int]$top) {
+        $b = New-Object System.Windows.Forms.Button
+        $b.Text = $text
+        $b.Size = New-Object System.Drawing.Size(128, 30)
+        $b.Location = New-Object System.Drawing.Point(276, $top)
+        $dialog.Controls.Add($b)
+        return $b
+    }
+    $addButton    = Side-Button 'Add...' 60
+    $renameButton = Side-Button 'Rename...' 96
+    $removeButton = Side-Button 'Remove' 132
+    $close = New-Object System.Windows.Forms.Button
+    $close.Text = 'Close'
+    $close.Size = New-Object System.Drawing.Size(128, 32)
+    $close.Location = New-Object System.Drawing.Point(276, 252)
+    $close.DialogResult = 'OK'
+    $dialog.Controls.AddRange(@($info, $list, $close))
+    $dialog.AcceptButton = $close
+    $dialog.CancelButton = $close
+
+    function Fill-List {
+        $list.Items.Clear()
+        foreach ($c in $mine) { [void]$list.Items.Add($c) }
+        $addButton.Enabled = ($mine.Count -lt $MPL.MaxMyColumns)
+    }
+    function Test-NewName([string]$name, [string]$except) {
+        if (-not $name) { return $false }
+        foreach ($c in (@($MPL.FixedColumns) + @($mine))) {
+            if ($c -ieq $name -and $c -ne $except) {
+                [void](MPL-Box "There's already a column called '$c'." 'Information')
+                return $false
+            }
+        }
+        return $true
+    }
+    function Relabel([string]$from, [string]$to) {
+        foreach ($item in $Items) {
+            if ($item.Group -eq $from -and -not $item.Loose) { MPL-WriteLabel $item.Path $to $item.Name }
+        }
+    }
+    function Save-Mine {
+        $S.MyColumns = [string[]]$mine.ToArray()
+        MPL-SaveSettings $S
+    }
+    Fill-List
+
+    $addButton.Add_Click({
+        $name = Clean-ColumnName ([Microsoft.VisualBasic.Interaction]::InputBox('Name for the new column:', 'Add column', ''))
+        if (-not (Test-NewName $name '')) { return }
+        $mine.Add($name)
+        Save-Mine
+        Fill-List
+        MPL-Log "Column added: $name"
+    })
+    $renameButton.Add_Click({
+        if ($list.SelectedIndex -lt 0) { [void](MPL-Box 'Click a column in the list first.' 'Information'); return }
+        $old = [string]$list.SelectedItem
+        $name = Clean-ColumnName ([Microsoft.VisualBasic.Interaction]::InputBox("New name for the column '$old':", 'Rename column', $old))
+        if (-not $name -or $name -eq $old -or -not (Test-NewName $name $old)) { return }
+        Relabel $old $name
+        $mine[$mine.IndexOf($old)] = $name
+        Save-Mine
+        Fill-List
+        MPL-Log "Column renamed: $old -> $name"
+    })
+    $removeButton.Add_Click({
+        if ($list.SelectedIndex -lt 0) { [void](MPL-Box 'Click a column in the list first.' 'Information'); return }
+        $old = [string]$list.SelectedItem
+        $answer = MPL-Box "Remove the column '$old'? Its scripts go to Unsorted (nothing is uninstalled)." 'Question' 'YesNo'
+        if ($answer -ne 'Yes') { return }
+        Relabel $old 'Unsorted'
+        [void]$mine.Remove($old)
+        Save-Mine
+        Fill-List
+        MPL-Log "Column removed: $old (its scripts are in Unsorted)"
+    })
+    [void]$dialog.ShowDialog()
+    $dialog.Dispose()
+    MPL-SaveLog
 }
 
 
@@ -190,19 +442,19 @@ function Test-Tagged($item) {
 
 $ColumnWidth = 230
 $BoxHeight   = 560
-$TopBarHeight = 44
+$TopBarHeight = 60   # room for the three framed groups in the top bar
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "$($MPL.Name)  $($MPL.Version)"
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
-$formWidth = [Math]::Max(940, 12 + $Columns.Count * ($ColumnWidth + 8))
+$formWidth = 12 + $FixedColumns.Count * ($ColumnWidth + 8)
 $form.ClientSize = New-Object System.Drawing.Size($formWidth, ($BoxHeight + 70 + $TopBarHeight))
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
 if ($Icon) { $form.Icon = $Icon }
 
-$State = @{ Busy = $false }       # true while a whole column is being ticked at once
+$State = @{ Busy = $false; Filling = $false; TickedOnly = $false }   # Busy: a whole column is being ticked at once; Filling: a search is refilling the lists; TickedOnly: the "Show ticked only" box
 $Panels = @{}                     # panel title -> @{ List; Items }
 $PanelOrder = @()
 
@@ -214,6 +466,13 @@ $Drag = @{ From = $null; Index = -1; Start = $null; WasTicked = $null; Item = $n
 
 function Move-ToColumn($item, [string]$column) {
     if (-not $item -or -not $column -or $item.Group -eq $column) { return }
+    if ($AllColumns -notcontains $column) {
+        if ($MyColumns.Count -ge $MPL.MaxMyColumns) {
+            [void](MPL-Box "You already have $($MPL.MaxMyColumns) columns of your own. Remove one with Columns... first." 'Information')
+            return
+        }
+        $S.MyColumns = [string[]](@($MyColumns) + $column)
+    }
     if ($item.Loose) {
         [void](MPL-Box "'$($item.Name)' is a single .lua file, so it has no label to change.`n`nUse Install script... on it to make it a full package, then it can be moved." 'Information')
         return
@@ -296,7 +555,7 @@ function Enable-Moving($list) {
         $item = $Panels[$theList.Tag.Title].Items[$index]
 
         $moveTo = New-Object System.Windows.Forms.ToolStripMenuItem ("Move '" + $item.Name + "' to")
-        foreach ($column in ($Columns | Where-Object { $_ -ne 'Unsorted' -and $_ -ne $item.Group })) {
+        foreach ($column in ($AllColumns | Where-Object { $_ -ne $item.Group })) {
             $choice = New-Object System.Windows.Forms.ToolStripMenuItem $column
             $choice.Tag = @{ Item = $item; Column = $column }
             $choice.Add_Click({ param($clicked, $ev) Move-ToColumn $clicked.Tag.Item $clicked.Tag.Column })
@@ -306,8 +565,8 @@ function Enable-Moving($list) {
         $newColumn.Tag = $item
         $newColumn.Add_Click({
             param($clicked, $ev)
-            $name = [Microsoft.VisualBasic.Interaction]::InputBox('Name for the new column:', 'New column', '')
-            if ($name -and $name.Trim()) { Move-ToColumn $clicked.Tag ($name.Trim() -replace '\|', '-') }
+            $name = Clean-ColumnName ([Microsoft.VisualBasic.Interaction]::InputBox('Name for the new column:', 'New column', ''))
+            if ($name) { Move-ToColumn $clicked.Tag $name }
         })
         [void]$moveTo.DropDownItems.Add($newColumn)
         [void]$sender.Items.Add($moveTo)
@@ -332,7 +591,9 @@ function Add-Panel([string]$title, $items, [int]$left, [int]$top, [int]$height, 
     $header.BackColor = [System.Drawing.SystemColors]::Control
     $header.Location = New-Object System.Drawing.Point(8, 0)
 
-    $list = New-Object System.Windows.Forms.CheckedListBox
+    $list = $null
+    if ($script:TickListType) { try { $list = New-Object $script:TickListType } catch { $list = $null } }
+    if (-not $list) { $list = New-Object System.Windows.Forms.CheckedListBox }
     $list.CheckOnClick = $true
     $list.IntegralHeight = $false
     $list.Location = New-Object System.Drawing.Point(8, 28)
@@ -355,9 +616,17 @@ function Add-Panel([string]$title, $items, [int]$left, [int]$top, [int]$height, 
     $frame.Controls.AddRange(@($header, $list, $all, $none))
     $header.BringToFront()
     $form.Controls.Add($frame)
-    $script:Panels[$title] = @{ List = $list; Items = $items }
+    $script:Panels[$title] = @{ List = $list; Items = $items; All = $items; Header = $header }
     $script:PanelOrder += $title
     Enable-Moving $list
+
+    # Keep the tick of every script, so a search can hide it without losing it
+    $list.Add_ItemCheck({
+        param($sender, $e)
+        if ($State.Filling) { return }
+        $item = $Panels[$sender.Tag.Title].Items[$e.Index]
+        if ($e.NewValue -eq 'Checked') { $TickState[$item.Key] = $true } else { $TickState.Remove($item.Key) }
+    })
 
     # the title box is ticked when every script in the box is
     $header.Checked = ($list.Items.Count -gt 0 -and $list.CheckedItems.Count -eq $list.Items.Count)
@@ -375,22 +644,19 @@ function Add-Panel([string]$title, $items, [int]$left, [int]$top, [int]$height, 
     }.GetNewClosure())
 }
 
-# Lay out the columns. A column with both plain and tagged scripts gets two boxes.
+# Lay out the columns: the five fixed ones across the top; each of yours under one of them
 $x = 12
 $top = 10 + $TopBarHeight
-foreach ($column in $Columns) {
-    $inColumn = @($Items | Where-Object { $_.Group -eq $column } | Sort-Object Name)
-    $plain    = @($inColumn | Where-Object { -not (Test-Tagged $_) })
-    $tagged   = @($inColumn | Where-Object { Test-Tagged $_ })
-    if ($plain.Count -gt 0 -and $tagged.Count -gt 0) {
-        $gap = 8
-        $rowHeight = 19
-        $minimum = 74 + $rowHeight * 3 + 6
-        $upper = 74 + $rowHeight * [Math]::Max(3, $plain.Count) + 6      # room for the plain scripts...
-        $upper = [Math]::Min($upper, [int](($BoxHeight - $gap) * 0.55))    # ...but at most 55%
-        $upper = [Math]::Max($upper, $minimum)
-        Add-Panel $column $plain $x $top $upper $column
-        Add-Panel ($SplitTag + ' ' + $column) $tagged $x ($top + $upper + $gap) ($BoxHeight - $upper - $gap) $column
+$gap = 8
+for ($i = 0; $i -lt $FixedColumns.Count; $i++) {
+    $column = $FixedColumns[$i]
+    $inColumn = @($Items | Where-Object { (Get-ShownColumn $_) -eq $column } | Sort-Object Name)
+    if ($i -lt $MyColumns.Count) {
+        $mine = $MyColumns[$i]
+        $inMine = @($Items | Where-Object { $_.Group -eq $mine } | Sort-Object Name)
+        $upper = [int](($BoxHeight - $gap) * 0.55)
+        Add-Panel $column $inColumn $x $top $upper $column
+        Add-Panel $mine $inMine $x ($top + $upper + $gap) ($BoxHeight - $upper - $gap) $mine
     } else {
         Add-Panel $column $inColumn $x $top $BoxHeight $column
     }
@@ -412,23 +678,72 @@ if ($Items.Count -eq 0) {
 
 # ---------- ticks ----------
 
+# Every ticked script, including any a search is hiding
+function Get-TickedItems {
+    return @($Items | Where-Object { $TickState[$_.Key] })
+}
+
 function Get-TickedKeys {
-    $keys = @()
-    foreach ($title in $PanelOrder) {
-        $panel = $Panels[$title]
-        foreach ($i in $panel.List.CheckedIndices) { $keys += $panel.Items[$i].Key }
-    }
+    $keys = @(Get-TickedItems | ForEach-Object { $_.Key })
     return ,$keys
 }
 
+# A saved configuration sets every script's tick, shown or hidden
 function Set-TickedKeys($keys) {
     $wanted = MPL-Flatten $keys
+    $TickState.Clear()
+    foreach ($item in $Items) { if ($wanted -contains $item.Key) { $TickState[$item.Key] = $true } }
+    Show-Search
+}
+
+
+# ---------- search: show only the scripts that match (hiding never unticks) ----------
+
+function Show-Search {
+    $search = MPL-ParseSearch $searchBox.Text
+    $searching = ($search.Want.Count + $search.Not.Count) -gt 0
+    $State.Filling = $true
+    $shown = 0; $hiddenTicked = 0
     foreach ($title in $PanelOrder) {
         $panel = $Panels[$title]
-        for ($i = 0; $i -lt $panel.List.Items.Count; $i++) {
-            $panel.List.SetItemChecked($i, ($wanted -contains $panel.Items[$i].Key))
+        $list = $panel.List
+        $visible = @()
+        foreach ($item in $panel.All) {
+            $text = $SearchIndex[$item.Key]
+            if (-not $text) { $text = ([string]$item.Name).ToLower() }
+            if (-not $searching -or (MPL-SearchMatch $text $search)) {
+                # "Show ticked only" filters when it's switched on (or the lists refill), as in Sort toolbar:
+                # unticking a script afterwards leaves it on screen, so nothing jumps away mid-click
+                if (-not $State.TickedOnly -or $TickState[$item.Key]) { $visible += $item }
+            }
+            elseif ($TickState[$item.Key]) { $hiddenTicked++ }
         }
+        $list.BeginUpdate()
+        $list.Items.Clear()
+        foreach ($item in $visible) { [void]$list.Items.Add($item.Name, [bool]$TickState[$item.Key]) }
+        $list.EndUpdate()
+        $panel.Items = $visible
+        $panel.Header.Checked = ($list.Items.Count -gt 0 -and $list.CheckedItems.Count -eq $list.Items.Count)
+        $shown += $visible.Count
     }
+    $State.Filling = $false
+
+    if ($searching) {
+        $line = "Search: $shown of $($Items.Count) shown"
+        if ($shown -eq 0) { $line = "Search: no scripts match" }
+        if ($hiddenTicked -gt 0) {
+            $line += "  ·  $hiddenTicked ticked script" + $(if ($hiddenTicked -gt 1) { 's' } else { '' }) + " hidden (still installed at launch)"
+            $libraryLabel.ForeColor = [System.Drawing.Color]::DarkRed
+        } else {
+            $libraryLabel.ForeColor = [System.Drawing.SystemColors]::ControlText
+        }
+        $libraryLabel.Text = $line
+    } else {
+        $libraryLabel.Text = "Library: $($S.MasterFolder)"
+        $libraryLabel.ForeColor = [System.Drawing.SystemColors]::GrayText
+    }
+    $clearSearch.Enabled = ($searchBox.Text -ne '')
+    $global:MPLSearch = $searchBox.Text
 }
 
 
@@ -442,25 +757,89 @@ function New-Button([string]$text, [int]$width, [int]$left, [int]$top, [int]$hei
     return $b
 }
 
+# The top bar is three framed groups, drawn like the column boxes below:
+# saved sets | finding and arranging | the two tools that open their own windows.
+function New-TopGroup([int]$left, [int]$width) {
+    $g = New-Object System.Windows.Forms.GroupBox
+    $g.Text = ''
+    $g.Location = New-Object System.Drawing.Point($left, 2)
+    $g.Size = New-Object System.Drawing.Size($width, 54)
+    $form.Controls.Add($g)
+    return $g
+}
+# A softly tinted button, so each of the two tool windows has its own colour
+function Set-Tint($button, [int[]]$rgb) {
+    $button.UseVisualStyleBackColor = $false
+    $button.FlatStyle = 'Flat'
+    $button.BackColor = [System.Drawing.Color]::FromArgb($rgb[0], $rgb[1], $rgb[2])
+    $button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb([int]($rgb[0] * 0.62), [int]($rgb[1] * 0.62), [int]($rgb[2] * 0.62))
+    $button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb([int]($rgb[0] * 0.93), [int]($rgb[1] * 0.93), [int]($rgb[2] * 0.93))
+}
+$W = $form.ClientSize.Width
+$groupConfig = New-TopGroup 8 478
+$groupFind   = New-TopGroup 492 436
+$groupTools  = New-TopGroup 934 ($W - 942)
+
 $configLabel = New-Object System.Windows.Forms.Label
 $configLabel.Text = 'Configuration:'
 $configLabel.AutoSize = $true
-$configLabel.Location = New-Object System.Drawing.Point(14, 16)
+$configLabel.Location = New-Object System.Drawing.Point(8, 22)
 
 $configList = New-Object System.Windows.Forms.ComboBox
 $configList.DropDownStyle = 'DropDownList'
-$configList.Location = New-Object System.Drawing.Point(115, 12)
-$configList.Size = New-Object System.Drawing.Size(220, 28)
+$configList.Location = New-Object System.Drawing.Point(101, 18)
+$configList.Size = New-Object System.Drawing.Size(180, 28)
 
-$saveConfig   = New-Button 'Save as...' 96 343 10
-$deleteConfig = New-Button 'Delete'     76 445 10
-$form.Controls.AddRange(@($configLabel, $configList, $saveConfig, $deleteConfig))
+$saveConfig   = New-Button 'Save as...' 96 289 16
+$deleteConfig = New-Button 'Delete'     76 391 16
+$groupConfig.Controls.AddRange(@($configLabel, $configList, $saveConfig, $deleteConfig))
 
-$W = $form.ClientSize.Width
-$installButton  = New-Button 'Install script...' 130 ($W - 146) 10
-$sortButton     = New-Button 'Sort toolbar...'   120 ($W - 274) 10
-$settingsButton = New-Button 'Settings...'        96 ($W - 378) 10
-$form.Controls.AddRange(@($installButton, $sortButton, $settingsButton))
+# Search box (Ctrl+F). Enter and Esc stay in the box: Enter must not launch Moho, Esc clears it.
+$searchLabel = New-Object System.Windows.Forms.Label
+$searchLabel.Text = 'Search:'
+$searchLabel.AutoSize = $true
+$searchLabel.Location = New-Object System.Drawing.Point(8, 22)
+$searchBox = New-Object System.Windows.Forms.TextBox
+$searchBox.Location = New-Object System.Drawing.Point(62, 18)
+$searchBox.Size = New-Object System.Drawing.Size(130, 28)
+$clearSearch = New-Button ([string][char]0x00D7) 26 194 17 26
+$clearSearch.Enabled = $false
+$groupFind.Controls.AddRange(@($searchLabel, $searchBox, $clearSearch))
+$tips = New-Object System.Windows.Forms.ToolTip
+$tips.SetToolTip($searchBox, "Shows only scripts that match. Searches names, columns, file names,`ntoolbar groups and Moho's own descriptions.`n`nbone key   both words, any order`n-color      hide matches`n""two words""   the exact phrase`n`nHidden scripts keep their ticks. Esc clears.")
+$tips.SetToolTip($clearSearch, 'Clear the search (Esc)')
+
+$searchTimer = New-Object System.Windows.Forms.Timer
+$searchTimer.Interval = 150                       # wait for a pause in typing
+$searchTimer.Add_Tick({ $searchTimer.Stop(); Show-Search })
+$searchBox.Add_TextChanged({ $searchTimer.Stop(); $searchTimer.Start() })
+$searchBox.Add_PreviewKeyDown({
+    param($sender, $e)
+    if ($e.KeyCode -eq 'Return' -or ($e.KeyCode -eq 'Escape' -and $searchBox.Text -ne '')) { $e.IsInputKey = $true }
+})
+$searchBox.Add_KeyDown({
+    param($sender, $e)
+    if ($e.KeyCode -eq 'Escape' -and $searchBox.Text -ne '') {
+        $searchBox.Text = ''; $searchTimer.Stop(); Show-Search; $e.SuppressKeyPress = $true
+    } elseif ($e.KeyCode -eq 'Return') {
+        $searchTimer.Stop(); Show-Search; $e.SuppressKeyPress = $true
+    }
+})
+$clearSearch.Add_Click({ $searchBox.Text = ''; $searchTimer.Stop(); Show-Search; [void]$searchBox.Focus() })
+$form.KeyPreview = $true
+$form.Add_KeyDown({
+    param($sender, $e)
+    if ($e.Control -and $e.KeyCode -eq 'F') { [void]$searchBox.Focus(); $searchBox.SelectAll(); $e.SuppressKeyPress = $true }
+})
+
+$columnsButton  = New-Button 'Columns...'         96 228 16
+$settingsButton = New-Button 'Settings...'        96 330 16
+$groupFind.Controls.AddRange(@($columnsButton, $settingsButton))
+$sortButton     = New-Button 'Sort toolbar...'   112 10 15 32
+$installButton  = New-Button 'Install script...' 124 ($groupTools.Width - 134) 15 32
+Set-Tint $sortButton    @(214, 240, 214)   # green, like the ticked rows in Sort toolbar
+Set-Tint $installButton @(212, 226, 250)   # blue
+$groupTools.Controls.AddRange(@($sortButton, $installButton))
 
 $script:LoadingConfigs = $false
 function Refresh-ConfigList([string]$select) {
@@ -482,6 +861,7 @@ function Close-For([string]$what) {
 $installButton.Add_Click({  Close-For 'install' })
 $sortButton.Add_Click({     Close-For 'sort' })
 $settingsButton.Add_Click({ Close-For 'settings' })
+$columnsButton.Add_Click({  Close-For 'columns' })
 
 $configList.Add_SelectedIndexChanged({
     $deleteConfig.Enabled = ($configList.SelectedIndex -ge 0)
@@ -528,7 +908,13 @@ $libraryLabel.Text = "Library: $($S.MasterFolder)"
 $libraryLabel.AutoEllipsis = $true
 $libraryLabel.ForeColor = [System.Drawing.SystemColors]::GrayText
 $libraryLabel.Location = New-Object System.Drawing.Point(14, ($y + 8))
-$libraryLabel.Size = New-Object System.Drawing.Size(($W - 560), 22)
+$libraryLabel.Size = New-Object System.Drawing.Size(($W - 700), 22)
+
+$tickedOnly = New-Object System.Windows.Forms.CheckBox
+$tickedOnly.Text = 'Show ticked only'
+$tickedOnly.AutoSize = $true
+$tickedOnly.Location = New-Object System.Drawing.Point(($W - 664), ($y + 7))
+$tickedOnly.Add_CheckedChanged({ $State.TickedOnly = $tickedOnly.Checked; Show-Search })
 
 $everything = New-Button 'Everything'  100 ($W - 530) $y 32
 $nothing    = New-Button 'None'        100 ($W - 424) $y 32
@@ -536,6 +922,7 @@ $launch     = New-Button 'Launch Moho' 140 ($W - 296) $y 32
 $cancel     = New-Button 'Cancel'      130 ($W - 146) $y 32
 $launch.Font = New-Object System.Drawing.Font('Segoe UI', 9.5, [System.Drawing.FontStyle]::Bold)
 $launch.DialogResult = 'OK'
+Set-Tint $launch @(250, 204, 214)   # reddish pink: the one that starts Moho
 $cancel.DialogResult = 'Cancel'
 
 function Set-AllTicks([bool]$ticked) {
@@ -547,26 +934,36 @@ function Set-AllTicks([bool]$ticked) {
 $everything.Add_Click({ Set-AllTicks $true })
 $nothing.Add_Click({ Set-AllTicks $false })
 
-$form.Controls.AddRange(@($libraryLabel, $everything, $nothing, $launch, $cancel))
+$form.Controls.AddRange(@($libraryLabel, $tickedOnly, $everything, $nothing, $launch, $cancel))
 $form.AcceptButton = $launch
 $form.CancelButton = $cancel
 Refresh-ConfigList $script:LastConfig
+if ($global:MPLSearch) { $searchBox.Text = $global:MPLSearch; $searchTimer.Stop() }   # kept when the launcher reopens
+Show-Search
 
 
 # ==========================================================================
 #  Show it, then do what was chosen
 # ==========================================================================
 
-$result = $form.ShowDialog()
+# "Save and Launch Moho" in Sort toolbar: go straight to launching with the saved ticks
+if ($global:MPLLaunchNow) {
+    $global:MPLLaunchNow = $false
+    $result = 'OK'
+} else {
+    $result = $form.ShowDialog()
+}
 
 if ($result -eq 'Retry') {
     $what = [string]$form.Tag
     $form.Dispose()
+    if ($what -ne 'refresh') { $global:MPLSearch = '' }   # a moved script keeps the search; anything else starts clear
     try {
         switch ($what) {
-            'install'  { & (Join-Path $PSScriptRoot 'InstallScript.ps1') }
-            'sort'     { & (Join-Path $PSScriptRoot 'SortToolbar.ps1') }
+            'install'  { & (Join-Path $PSScriptRoot 'MPL-InstallScript.ps1') }
+            'sort'     { & (Join-Path $PSScriptRoot 'MPL-SortToolbar.ps1') }
             'settings' { [void](Show-SettingsDialog) }
+            'columns'  { Show-ColumnsDialog }
             'refresh'  { }
         }
     } catch {
@@ -580,11 +977,7 @@ if ($result -ne 'OK') { exit 0 }
 
 $script:LastConfig = ''
 if ($configList.SelectedIndex -ge 0) { $script:LastConfig = [string]$configList.SelectedItem }
-$chosen = @()
-foreach ($title in $PanelOrder) {
-    $panel = $Panels[$title]
-    foreach ($i in $panel.List.CheckedIndices) { $chosen += $panel.Items[$i] }
-}
+$chosen = @(Get-TickedItems)                      # hidden by a search or not
 Save-Choices @($chosen | ForEach-Object { $_.Key })
 $form.Dispose()
 
@@ -614,6 +1007,18 @@ if (-not (MPL-SameFolder $mohoReads $S.ContentFolder)) {
 try {
     MPL-Log "Launch: $($chosen.Count) scripts ticked. Moho: $($S.MohoPath)"
     [void](MPL-Apply $S $chosen)
+    if ($script:MPLConflicts.Count -gt 0) {
+        # #10: the library has different versions of scripts already in Moho. Ask once.
+        $names = @($script:MPLConflicts | ForEach-Object { "  " + (Split-Path -Leaf $_.Rel) + "   (" + $_.Package + ")" } | Select-Object -First 12)
+        if ($script:MPLConflicts.Count -gt 12) { $names += "  ...and $($script:MPLConflicts.Count - 12) more" }
+        $answer = MPL-Box ("Your library has a different version of:`n`n" + ($names -join "`n") +
+                           "`n`nThe copy in Moho's scripts folder wasn't installed by the launcher.`n`n" +
+                           "Yes: use the library's version (the copy in Moho is backed up first).`n" +
+                           "No: keep the copy in Moho (you won't be asked again about this version).") 'Question' 'YesNo'
+        if ($answer -eq 'Yes') { [void](MPL-Replace $S $script:MPLConflicts.ToArray()) }
+        else { MPL-KeepMine $S $script:MPLConflicts.ToArray() }
+        $script:MPLConflicts.Clear()
+    }
     MPL-Log (MPL-ToolbarApply $S)
 } catch {
     MPL-Log ("ERROR: " + $_.Exception.Message)
@@ -623,8 +1028,11 @@ try {
 }
 MPL-SaveLog
 
+if ($script:MPLNotes.Count -gt 0 -and $script:MPLWarnings.Count -eq 0) {
+    [void](MPL-Box (($script:MPLNotes | Select-Object -First 10) -join "`n") 'Information')
+}
 if ($script:MPLWarnings.Count -gt 0) {
-    $message = ($script:MPLWarnings | Select-Object -First 10) -join "`n`n"
+    $message = (@($script:MPLNotes) + @($script:MPLWarnings) | Select-Object -First 10) -join "`n`n"
     if ($script:MPLWarnings.Count -gt 10) { $message += "`n`n(and $($script:MPLWarnings.Count - 10) more in the log)" }
     $answer = MPL-Box ($message + "`n`nStart Moho anyway?") 'Warning' 'YesNo'
     if ($answer -ne 'Yes') { exit 0 }

@@ -20,7 +20,7 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $ErrorActionPreference = 'Stop'
 
-# Runs from the unzipped download (app\Setup.ps1, via 'Install Moho Power Launcher.cmd') or from the installed copy
+# Runs from the unzipped download (app\MPL-Setup.ps1, via 'Install Moho Power Launcher.cmd') or from the installed copy
 $AppFiles = $PSScriptRoot                                   # the app folder
 $Download = Split-Path -Parent $AppFiles                    # the unzipped download (the Install .cmd, README, LICENSE)
 if (-not (Get-ChildItem -LiteralPath $Download -Filter 'Install*.cmd' -File -ErrorAction SilentlyContinue)) { $Download = $AppFiles }
@@ -59,8 +59,8 @@ function New-Shortcut([string]$path, [string]$script, [string]$arguments, [strin
 # ==========================================================================
 
 if ($Uninstall) {
-    $answer = Box ("Remove ${Name}?`n`nScripts the launcher put in Moho's scripts folder are taken out.`n" +
-                   "Your own scripts and your script library stay exactly as they are.") 'Question' 'YesNo'
+    $answer = Box ("Remove ${Name}?`n`nEvery script stays in Moho exactly as it is now, with its Tools-panel place.`n" +
+                   "Your script library stays too.") 'Question' 'YesNo'
     if ($answer -ne 'Yes') { exit 0 }
     if (Get-Process -Name 'Moho' -ErrorAction SilentlyContinue) {
         [void](Box 'Close Moho first, then run Uninstall again.' 'Warning')
@@ -71,21 +71,13 @@ if ($Uninstall) {
         exit 1
     }
 
+    # 1.2.0 (Doug, 27 Nov): uninstalling leaves Moho's scripts folder alone. Taking the ticked
+    # scripts out made them vanish from Moho. The install record stays in the shared folder, so a
+    # reinstall (or another computer that uses this folder) carries on looking after them.
     $settings = MPL-LoadSettings
     $library = $settings.MasterFolder
-    $report = ''
+    $report = "Your scripts are still in Moho, as they were."
     $keepData = $false
-    try {
-        if ((MPL-LoadRecord).Broken) {
-            $keepData = $true                  # without its record the launcher can't tell its files from yours
-            $report = "The install record couldn't be read, so no scripts were taken out. It's kept in:`n$($MPL.DataDir)"
-        } elseif ($settings.ContentFolder) {
-            $report = MPL-RemoveAll $settings
-        }
-    } catch {
-        $keepData = $true
-        $report = "Couldn't take the launcher's scripts out: $($_.Exception.Message)"
-    }
 
     foreach ($path in @($DesktopLink, $StartMenu)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
@@ -345,6 +337,13 @@ try {
             Copy-Item -LiteralPath $file.FullName -Destination $InstallDir -Force
         }
     }
+    # 1.2.0: the program files got launcher-specific names; take out the old generic ones
+    if (-not $runningFromInstall) {
+        foreach ($old in @('Setup.ps1', 'InstallScript.ps1', 'SortToolbar.ps1')) {
+            $oldPath = Join-Path $InstallDir $old
+            if (Test-Path -LiteralPath $oldPath) { Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue }
+        }
+    }
     foreach ($extra in @('LICENSE', 'README.md')) {
         $path = Join-Path $Download $extra
         if ((Test-Path -LiteralPath $path) -and -not $runningFromInstall) { Copy-Item -LiteralPath $path -Destination $InstallDir -Force }
@@ -367,10 +366,14 @@ try {
 
     # ---------- shortcuts and the Installed apps entry ----------
     $launcher = Join-Path $InstallDir 'MohoPowerLauncher.ps1'
-    $setup    = Join-Path $InstallDir 'Setup.ps1'
+    $setup    = Join-Path $InstallDir 'MPL-Setup.ps1'
     if (-not (Test-Path -LiteralPath $StartMenu)) { New-Item -ItemType Directory -Path $StartMenu -Force | Out-Null }
     New-Shortcut (Join-Path $StartMenu "$Name.lnk") $launcher '' 'Choose your Moho scripts, then start Moho'
-    New-Shortcut (Join-Path $StartMenu "Uninstall $Name.lnk") $setup '-Uninstall' "Remove $Name (your scripts stay)"
+    # No Uninstall shortcut: Windows hides Start menu shortcuts named "Uninstall ..." by design.
+    # Uninstalling is in Windows Settings > Apps > Installed apps (the entry below). 1.2.0 takes
+    # out the hidden one older versions made.
+    $oldUninstall = Join-Path $StartMenu "Uninstall $Name.lnk"
+    if (Test-Path -LiteralPath $oldUninstall) { Remove-Item -LiteralPath $oldUninstall -Force -ErrorAction SilentlyContinue }
     if ($choices.Desktop) {
         New-Shortcut $DesktopLink $launcher '' 'Choose your Moho scripts, then start Moho'
     } elseif (Test-Path -LiteralPath $DesktopLink) {
