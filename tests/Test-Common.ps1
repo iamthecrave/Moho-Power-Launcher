@@ -71,7 +71,8 @@ Check 'readme at package top not copied' (-not (Has 'readme.txt'))
 Check 'menu subfolder copied' (Has 'menu/Extra/cd_menu_thing.lua')
 Check 'loose .lua goes to menu/Downloaded' (Has 'menu/Downloaded/loose_one.lua')
 Check "user's different shared.lua kept" ((Get-Content (Join-Path $Scripts 'utility/shared.lua')) -eq '-- the user''s own shared file')
-Check 'warned about the kept shared.lua' (@($w | Where-Object { $_ -like '*shared.lua*' }).Count -eq 1)
+Check 'asks about the different shared.lua (#10)' (@($script:MPLConflicts | Where-Object { $_.Rel -like '*shared.lua' }).Count -eq 1)
+$script:MPLConflicts.Clear()
 $rec = MPL-LoadRecord
 Check 'identical file already there is NOT taken over' (-not $rec.Files.ContainsKey('utility/common_util.lua'))
 Check 'record lists the copied files' ($rec.Files.ContainsKey('tool/ab_a_tool.lua'))
@@ -121,9 +122,10 @@ Write-Host "`n== an edited file becomes yours"
 [void](MPL-Apply $S @($byKey['ab_a_tool']))
 Add-Content (Join-Path $Scripts 'tool/ab_a_tool.lua') '-- my tweak'
 [void](MPL-Apply $S @()); $w = Warnings
-Check 'edited file kept' (Has 'tool/ab_a_tool.lua')
-Check 'and warned' (@($w | Where-Object { $_ -like '*yours now*' }).Count -eq 1)
-Remove-Item (Join-Path $Scripts 'tool') -Recurse -Force
+$libCopy = Get-ChildItem -Recurse -File $A -Filter 'ab_a_tool.lua' | Select-Object -First 1
+Check 'edit saved into the library (1.2)' ((Get-Content -Raw $libCopy.FullName) -like '*my tweak*')
+Check 'library copy backed up first' (@(Get-ChildItem -Recurse -File (Join-Path $Lib '_backups') -Filter 'ab_a_tool_before-your-edit_*').Count -eq 1)
+if (Test-Path (Join-Path $Scripts 'tool')) { Remove-Item (Join-Path $Scripts 'tool') -Recurse -Force }
 
 Write-Host "`n== your own tool list: blocks added, then removed byte for byte"
 $own = $builtIn.Replace("`r`n", "`n") + "group MOHO.Localize(`"/Tools/Group/Mine=Mine`")`ntool`tmy_own`t...`n"
